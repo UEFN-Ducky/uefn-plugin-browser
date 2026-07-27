@@ -1,0 +1,63 @@
+{
+  "id": "browser",
+  "kind": "plugin",
+  "version": "1.0.27",
+  "label": "Web Browser",
+  "description": "Real Chromium browser tab inside UEFN Ducky \u2014 docs, dashboards, search, and AI-driven navigation via browser_* MCP tools. CDP/remote debugging is off by default so Cloudflare checks work; opt in only for chrome-devtools-mcp.",
+  "min_app_version": "1.0.0",
+  "default_enabled": true,
+  "secret_keys": [],
+  "contributes": {
+    "ui.panels": [
+      {
+        "id": "browser",
+        "title": "Browser",
+        "icon": "assets/icon.svg",
+        "entry": "ui/index.html"
+      }
+    ],
+    "header.buttons": [
+      {
+        "id": "browser",
+        "title": "Web Browser",
+        "icon": "assets/icon.svg",
+        "action": "panel:browser",
+        "order": 40
+      }
+    ],
+    "shell.boot": [
+      {
+        "entry": "ui/boot.js"
+      }
+    ],
+    "agent.tools": {
+      "category": "browser",
+      "intent_pattern": "\\b(browser|chrome|devtools|cdp)\\b",
+      "plan_tools": [
+        "browser_status",
+        "browser_cdp_info",
+        "browser_runtime_info",
+        "browser_site_security"
+      ]
+    },
+    "walkthrough": {
+      "id": "browser",
+      "title": "Web Browser ready",
+      "auto_start": "first_enable",
+      "settings_tab": "Store",
+      "steps": [
+        {
+          "target": "settings.store.root",
+          "title": "Web Browser ready",
+          "body": "The in-app Chromium browser is enabled. Open the Browser tab or ask the agent to navigate with browser_* tools.",
+          "advance": "next",
+          "mode": "rect"
+        }
+      ]
+    }
+  },
+  "backend": {
+    "entry": "backend",
+    "register": "register"
+  }
+}
