@@ -1,13 +1,13 @@
 ---
 name: browser
 description: "In-app Chromium browser in UEFN-Ducky — open the Browser tab, navigate via browser_* MCP tools, and drive full DOM automation with chrome-devtools-mcp (--autoConnect to the pane's EBWebView profile)"
-license: All Rights Reserved
+license: MIT
 metadata:
   label: Browser
   version: 2
-  author: Iliya Kovachki
-  copyright: Copyright 2026 Iliya Kovachki
-  allow_redistribute: false
+  author: UEFN-Ducky
+  copyright: Copyright 2026 Mindful Path Company, LLC
+  allow_redistribute: true
   managed_by: uefn-ducky
   source_plugin_id: browser
 ---
