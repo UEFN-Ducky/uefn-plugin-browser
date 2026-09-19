@@ -1,9 +1,9 @@
 {
   "id": "browser",
   "kind": "plugin",
-  "version": "1.0.29",
+  "version": "1.0.30",
   "label": "Web Browser",
-  "description": "Real Chromium browser tab inside UEFN Ducky — docs, dashboards, search, and AI-driven navigation via browser_* MCP tools. CDP/remote debugging is off by default so Cloudflare checks work; opt in only for chrome-devtools-mcp.",
+  "description": "Real Chromium browser tab inside UEFN Ducky \u2014 docs, dashboards, search, and AI-driven navigation via browser_* MCP tools. CDP/remote debugging is off by default so Cloudflare checks work; opt in only for chrome-devtools-mcp.",
   "min_app_version": "1.0.0",
   "default_enabled": true,
   "secret_keys": [],
