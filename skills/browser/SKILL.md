@@ -43,7 +43,7 @@ Remote debugging (CDP) is **off by default**. Always-on `--remote-debugging-port
 
 `browser_*` tools handle navigation and history. For snapshot / click / fill / evaluate:
 
-1. Enable CDP: Browser Settings → **Enable remote debugging**, Save, **fully restart** UEFN-Ducky (or set `UEFN_DUCKY_BROWSER_CDP=1`).
+1. Enable CDP: Browser Settings → **Enable remote debugging**, Save — applies on next start (or set `UEFN_DUCKY_BROWSER_CDP=1`).
 2. Call `browser_cdp_info` (requires `cdp_enabled: true`).
 3. Add **chrome-devtools-mcp** to the IDE with the returned args, e.g.:
 

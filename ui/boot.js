@@ -417,7 +417,7 @@
       '<section class="browser-settings-section">' +
       "<h3>AI / DevTools</h3>" +
       '<label class="browser-settings-check"><input type="checkbox" id="bs-cdp" /> Enable remote debugging (CDP)</label>' +
-      '<p class="browser-settings-hint">Off by default so Cloudflare / “verify you are human” works like Chrome. Turn on only for chrome-devtools-mcp, then fully restart UEFN-Ducky.</p>' +
+      '<p class="browser-settings-hint">Off by default so Cloudflare / “verify you are human” works like Chrome. Turn on only for chrome-devtools-mcp — applies on next start.</p>' +
       "</section>" +
       '<section class="browser-settings-section">' +
       "<h3>This site (like Chrome)</h3>" +
