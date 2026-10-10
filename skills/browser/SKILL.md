@@ -22,18 +22,25 @@ You drive the **in-app browser** through the **browser** Store plugin (`browser_
 
 1. Plugin **browser** installed + enabled.
 2. Tools opted in for this chat.
-3. **Open a Browser tab first** (header globe → **+ New browser**, or pick an existing one) so a native pane exists. Settings (history / cache / homepage) are in that same dropdown.
+3. Ducky's window open. `browser_open` / `browser_navigate` open the Browser tab themselves when none is open (they wait up to 20 s for it). Settings (history / cache / homepage) are in the header globe's dropdown.
 
 ## Navigation (MCP)
 
 | Tool | Use |
 |------|-----|
+| `browser_open` | **Show the user a page**: opens the Browser tab if needed and brings it to the front |
 | `browser_status` | List open panes + CDP summary |
-| `browser_navigate` | Go to a URL (`pane_id` optional) |
+| `browser_navigate` | Go to a URL in a pane (`pane_id` optional) without bringing the tab forward |
 | `browser_command` | `back` / `forward` / `reload` / `stop` |
 | `browser_cdp_info` | Full EBWebView path + `chrome_devtools_mcp_args` |
 
-Typical flow: `browser_status` → `browser_navigate` with `https://…`.
+Addresses: `https://…`, `http://…`, or a dev server on this PC as `localhost:<port>/path` (http is added). Ducky's own window (`localhost:5173`, `127.0.0.1:4199`) is refused.
+
+Typical flow: `browser_open` with the page → `browser_command` `reload` after you change what it serves (dev servers with live reload update by themselves).
+
+## Workflows
+
+Node **Open in Ducky browser** (`browser.open`): its **Page address** pin (wired, or set in the step's details, `{{…}}` allowed) is shown in the Browser tab, which opens and comes to the front first. Outputs `url` and `pane_id`. It fails, saying why, when Ducky's window isn't open, the address isn't one, or the tab doesn't open within 20 s. Put it after the step that starts a dev server and waits for it. Template: **Show a page in the Browser tab**.
 
 ## Cloudflare / “Verify you are human”
 

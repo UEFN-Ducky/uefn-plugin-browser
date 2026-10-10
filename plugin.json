@@ -1,10 +1,10 @@
 {
   "id": "browser",
   "kind": "plugin",
-  "version": "1.0.31",
+  "version": "1.0.32",
   "label": "Web Browser",
-  "description": "Real Chromium browser tab inside UEFN Ducky \u2014 docs, dashboards, search, and AI-driven navigation via browser_* MCP tools. CDP/remote debugging is off by default so Cloudflare checks work; opt in only for chrome-devtools-mcp.",
-  "min_app_version": "1.0.0",
+  "description": "Real Chromium browser tab inside UEFN Ducky \u2014 docs, dashboards, search, local dev servers, and AI-driven navigation via browser_* MCP tools. Workflows show a page with the Open in Ducky browser node. CDP/remote debugging is off by default so Cloudflare checks work; opt in only for chrome-devtools-mcp.",
+  "min_app_version": "1.2.357",
   "default_enabled": true,
   "secret_keys": [],
   "contributes": {
@@ -38,6 +38,93 @@
         "browser_cdp_info",
         "browser_runtime_info",
         "browser_site_security"
+      ]
+    },
+    "automations": {
+      "nodes": [
+        {
+          "id": "browser.open",
+          "label": "Open in Ducky browser",
+          "group": "Browser",
+          "description": "Shows a page in Ducky's Browser tab, opening the tab first and bringing it to the front. Works for websites and local dev servers (localhost:<port>); not for Ducky's own window. Fails when Ducky's window isn't open.",
+          "inputs": [
+            {
+              "id": "url",
+              "label": "Page address",
+              "type": "text",
+              "required": true
+            }
+          ],
+          "outputs": [
+            {
+              "id": "url",
+              "label": "Page address shown",
+              "type": "text"
+            },
+            {
+              "id": "pane_id",
+              "label": "Browser tab",
+              "type": "text"
+            }
+          ]
+        }
+      ],
+      "templates": [
+        {
+          "id": "browser-open-page",
+          "label": "Show a page in the Browser tab",
+          "icon": "🌐",
+          "description": "Opens Ducky's Browser tab on a page: a website, or a dev server you started on this PC (localhost:<port>).",
+          "graph": {
+            "nodes": [
+              {
+                "id": "s",
+                "type": "start.manual",
+                "x": 40,
+                "y": 80,
+                "config": {},
+                "label": "Start",
+                "description": ""
+              },
+              {
+                "id": "open",
+                "type": "browser.open",
+                "x": 320,
+                "y": 80,
+                "config": {
+                  "inputs": {
+                    "url": "https://uefnducky.org"
+                  }
+                },
+                "label": "Open in Ducky browser",
+                "description": "Change the page address in this step's details."
+              },
+              {
+                "id": "f",
+                "type": "pipeline.finish",
+                "x": 600,
+                "y": 80,
+                "config": {
+                  "message": "Showing {{nodes.open.url}} in the Browser tab."
+                },
+                "label": "Done",
+                "description": ""
+              }
+            ],
+            "edges": [
+              {
+                "source": "s",
+                "target": "open",
+                "kind": "main"
+              },
+              {
+                "source": "open",
+                "target": "f",
+                "kind": "main"
+              }
+            ]
+          }
+        }
       ]
     },
     "walkthrough": {
