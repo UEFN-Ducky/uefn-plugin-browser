@@ -34,6 +34,7 @@ You drive the **in-app browser** through the **browser** Store plugin (`browser_
 | `browser_command` | `back` / `forward` / `reload` / `stop` |
 | `browser_cdp_info` | Full EBWebView path + `chrome_devtools_mcp_args` |
 | `browser_video_frames` | Frames from any moment of a YouTube video, from the player in the tab |
+| `browser_capture` / `browser_read` | A picture / the text of a page a program in this chat's sandbox serves (localhost:<its port>) |
 
 Addresses: `https://…`, `http://…`, or a dev server on this PC as `localhost:<port>/path` (http is added). Ducky's own window (`localhost:5173`, `127.0.0.1:4199`) is refused.
 
@@ -48,6 +49,14 @@ contact sheet). It plays the video in the Browser tab (brought to the front, mut
 each time and saves the player's own frame, up to 1280 px, as a JPEG in this chat. Open each
 returned path with `view_image`. Needs UEFN Ducky 1.2.426 or newer. A cookie question from
 YouTube in the tab is the person's to answer.
+
+## Sandbox web apps
+
+A program an agent started with `sandbox_launch` (a dev server, a web UI) is shown with
+`browser_open("localhost:<port>")`. Then `browser_capture()` saves a picture of the page in the
+chat (open it with `view_image`) and `browser_read()` returns its text, to check what the app
+really shows. Both refuse any page that isn't served on one of this chat's sandbox ports, so a
+site the person is signed in to is never captured or read.
 
 ## Workflows
 

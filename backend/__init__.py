@@ -10,6 +10,16 @@ from typing import Any
 
 INTENT = r"\b(browser|chrome|devtools|cdp)\b"
 VIDEO_INTENT = r"\b(browser|video|youtube|frames?|shorts?)\b"
+SANDBOX_INTENT = r"\b(browser|sandbox|localhost|dev server|web app|page)\b"
+
+
+def _calling_chat() -> str:
+    try:
+        from backend.tools.panel.panel_ui import _resolve_ask_user_conv_id
+
+        return _resolve_ask_user_conv_id()
+    except Exception:
+        return ""
 
 # How long a Browser tab that was just asked for gets to create its page view.
 _TAB_WAIT_S = 20.0
@@ -366,6 +376,79 @@ def site_security(pane_id: str = "") -> dict[str, Any]:
     return browser_overlay.site_security_info(pane_id)
 
 
+def _sandbox_page(pane_id: str, conv_id: str) -> tuple[str, str]:
+    """(pane id, '') when the pane shows a page served by this chat's sandbox, else ('', why not).
+
+    Capturing or reading a page is only for what a sandbox program serves on its own
+    localhost port: never a site the person is signed in to."""
+    from urllib.parse import urlsplit
+
+    from frontend.ui_web import browser_overlay
+
+    try:
+        from backend.sandbox.service import owned_ports
+    except ImportError:
+        return "", "This needs a newer UEFN Ducky (one with sandboxes). Update the app."
+    pid = browser_overlay.pick_pane_id(pane_id)
+    if not pid:
+        return "", "No Browser tab is open. browser_open('localhost:<port>') first."
+    url = str(browser_overlay.get_state(pid).get("url") or "")
+    parts = urlsplit(url)
+    host = (parts.hostname or "").lower()
+    if host not in ("127.0.0.1", "localhost", "::1") or not parts.port or parts.port not in owned_ports(conv_id):
+        return "", (f"The Browser tab shows {url or 'nothing'}. Only pages a program in this chat's sandbox serves "
+                    "(localhost:<its port>) can be captured or read.")
+    return pid, ""
+
+
+def capture_page(pane_id: str = "", conv_id: str = "") -> dict[str, Any]:
+    """A picture of the sandbox page in the Browser tab, saved in chat ``conv_id``."""
+    import base64
+
+    from frontend.ui_web import browser_overlay
+
+    if not hasattr(browser_overlay, "devtools"):
+        return {"ok": False, "error": "This needs a newer UEFN Ducky. Update the app."}
+    pid, why = _sandbox_page(pane_id, conv_id)
+    if why:
+        return {"ok": False, "error": why}
+    got = browser_overlay.devtools(pid, "Page.captureScreenshot", {"format": "png"}, timeout_s=30.0)
+    data = str((got.get("reply") or {}).get("data") or "")
+    if not got.get("ok") or not data:
+        return {"ok": False, "error": str(got.get("error") or "The page didn't give a picture.")}
+    from frontend.ui_web.tool_captures import save_capture_for_agents
+
+    saved = save_capture_for_agents(base64.b64decode(data), prefix="browser_page", conv_id=conv_id)
+    if not saved.get("ok"):
+        return {"ok": False, "error": str(saved.get("error") or "The picture was not saved.")}
+    url = str(browser_overlay.get_state(pid).get("url") or "")
+    return {"ok": True, "url": url, "path": saved.get("path"), "media_url": saved.get("media_url"),
+            "next": "Open it with view_image(path)."}
+
+
+_READ_JS = r"""(() => ({
+  title: document.title,
+  url: location.href,
+  text: (document.body ? document.body.innerText : '').slice(0, %d),
+}))()"""
+
+
+def read_page(pane_id: str = "", conv_id: str = "", max_chars: int = 20000) -> dict[str, Any]:
+    """The text of the sandbox page in the Browser tab."""
+    from frontend.ui_web import browser_overlay
+
+    if not hasattr(browser_overlay, "evaluate"):
+        return {"ok": False, "error": "This needs a newer UEFN Ducky. Update the app."}
+    pid, why = _sandbox_page(pane_id, conv_id)
+    if why:
+        return {"ok": False, "error": why}
+    got = browser_overlay.evaluate(pid, _READ_JS % max(500, min(int(max_chars), 100000)), timeout_s=20.0)
+    value = got.get("value") if got.get("ok") and isinstance(got.get("value"), dict) else None
+    if value is None:
+        return {"ok": False, "error": str(got.get("error") or "The page sent nothing back.")}
+    return {"ok": True, **value}
+
+
 # Work that needs the Browser tab's page views, by panel RPC name. In Ducky's window it runs
 # directly; an agents' tool server (another process, with no page views) sends it there.
 _PANE_WORK: dict[str, Any] = {
@@ -376,6 +459,8 @@ _PANE_WORK: dict[str, Any] = {
     "clear_data": clear_data,
     "site_security": site_security,
     "video_frames": video_frames,
+    "capture_page": capture_page,
+    "read_page": read_page,
 }
 
 
@@ -422,6 +507,28 @@ def register(api) -> None:
         from backend.tools.core.web_lookup import _asking_first
 
         return _dumps(_asking_first(_video_frames_tool, url, frames=frames, overview=overview))
+
+    @api.tool(name="browser_capture", intent=SANDBOX_INTENT)
+    def browser_capture(pane_id: str = "") -> Any:
+        """A picture of the page in the Browser tab, saved in this chat (view_image opens it).
+        Only for a page a program in this chat's sandbox serves (browser_open('localhost:<port>')
+        after sandbox_launch): check what a web app you started really shows."""
+        out = _pane_work("capture_page", pane_id=pane_id, conv_id=_calling_chat())
+        path = str(out.get("path") or "")
+        if path:
+            try:
+                from mcp.server.fastmcp import Image
+
+                return [_dumps(out), Image(path=path)]
+            except Exception:
+                pass
+        return _dumps(out)
+
+    @api.tool(name="browser_read", intent=SANDBOX_INTENT)
+    def browser_read(pane_id: str = "", max_chars: int = 20000) -> str:
+        """The title and visible text of the page in the Browser tab. Only for a page a program
+        in this chat's sandbox serves (localhost:<its port>), never a site the person uses."""
+        return _dumps(_pane_work("read_page", pane_id=pane_id, conv_id=_calling_chat(), max_chars=max_chars))
 
     @api.tool(name="browser_command", intent=INTENT)
     def browser_command(command: str, pane_id: str = "") -> str:
