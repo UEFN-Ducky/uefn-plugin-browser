@@ -33,7 +33,7 @@ _VIDEO_STATE_JS = r"""(() => {
   return {
     id: new URLSearchParams(location.search).get('v') || (m ? m[1] : ''),
     host: location.hostname,
-    ready: !!(v && v.readyState >= 1 && isFinite(v.duration) && v.duration > 0),
+    ready: !!(document.readyState === 'complete' && v && v.readyState >= 1 && isFinite(v.duration) && v.duration > 0),
     duration: v && isFinite(v.duration) ? v.duration : 0,
     ad,
   };
@@ -142,36 +142,86 @@ def open_page(url: str) -> dict[str, Any]:
     return {"ok": True, "url": browser_overlay.normalize_url(address), "pane_id": pid}
 
 
-def _wait_for_video(pane_id: str, vid: str) -> tuple[float, str]:
-    """(duration, "") once the pane's player has loaded ``vid`` and no ad is playing, else (0, why not)."""
+def _wait_for_video(pane_id: str, vid: str, wait_s: float = _VIDEO_WAIT_S) -> tuple[float, str]:
+    """(duration, "") once the pane's player has loaded ``vid`` and no ad is playing, else (0, why not).
+
+    Ready twice in a row, half a second apart: right after a page load YouTube rebuilds its
+    player once, which ends a script that is running and briefly leaves no <video>."""
     from frontend.ui_web import browser_overlay
 
-    deadline = time.monotonic() + _VIDEO_WAIT_S
+    deadline = time.monotonic() + wait_s
     last = "the video page didn't load"
+    seen_ready = False
     while time.monotonic() < deadline:
         got = browser_overlay.evaluate(pane_id, _VIDEO_STATE_JS, timeout_s=10.0)
         state = got.get("value") if got.get("ok") and isinstance(got.get("value"), dict) else {}
         if str(state.get("host") or "").startswith("consent."):
             return 0.0, "YouTube is asking about cookies in the Browser tab. Ask the person to choose there, then try again."
-        if state.get("id") == vid and state.get("ready") and not state.get("ad"):
+        ready = state.get("id") == vid and state.get("ready") and not state.get("ad")
+        if ready and seen_ready:
             return float(state.get("duration") or 0.0), ""
+        seen_ready = bool(ready)
         if state.get("ad"):
             last = "an ad was still playing"
         time.sleep(0.5)
-    return 0.0, f"The video didn't get ready in the Browser tab within {_VIDEO_WAIT_S:.0f} s ({last})."
+    return 0.0, f"The video didn't get ready in the Browser tab within {wait_s:.0f} s ({last})."
 
 
-def video_frames(url: str, frames: list[Any] | None = None, overview: int = 0, granted: bool = False) -> dict[str, Any]:
-    """Seek the YouTube player in the Browser tab and save frames into this chat as JPEGs."""
+def _in_app() -> bool:
+    """True in Ducky's window process, where the Browser tab's page views live. Agents' tool
+    servers are other processes: they hand page work to the window over its panel API."""
+    from frontend.ui_web import browser_overlay
+
+    return getattr(browser_overlay, "_main_window", None) is not None
+
+
+def _app_call(method: str, params: dict[str, Any], timeout_s: float = 240.0) -> dict[str, Any]:
+    """Run this plugin's panel RPC ``method`` in Ducky's window process."""
+    import urllib.request
+
+    from frontend.settings import PANEL_LISTENER_PORT
+
+    body = json.dumps({"args": {"plugin_id": "browser", "method": method, "params": params}}).encode("utf-8")
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{PANEL_LISTENER_PORT - 1}/__panel_api/plugin_call",
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout_s) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (OSError, ValueError) as exc:
+        return {"ok": False, "error": f"Ducky's window didn't answer ({exc}). Is Ducky open?"}
+    result = payload.get("result", payload) if isinstance(payload, dict) else None
+    return result if isinstance(result, dict) else {"ok": False, "error": "Ducky's window sent an unreadable answer."}
+
+
+def _video_frames_tool(url: str, frames: list[Any] | None = None, overview: int = 0,
+                       granted: bool = False) -> dict[str, Any]:
+    """Tool body: web access and the chat are checked where the agent's call arrives, then
+    the frames are taken where the Browser tab lives."""
+    from backend.tools.core.web_lookup import _access_mode, _conversation, permission_block
+    from backend.tools.panel.panel_ui import _resolve_ask_user_conv_id
+
+    blocked = permission_block(_conversation(), _access_mode(), granted=granted)
+    if blocked:
+        return blocked
+    params = {"url": url, "frames": list(frames or []), "overview": overview, "conv_id": _resolve_ask_user_conv_id()}
+    if _in_app():
+        return video_frames(**params)
+    return _app_call("video_frames", params)
+
+
+def video_frames(url: str, frames: list[Any] | None = None, overview: int = 0, conv_id: str = "") -> dict[str, Any]:
+    """Seek the YouTube player in the Browser tab and save frames into chat ``conv_id`` as JPEGs."""
     import base64
 
     from frontend.ui_web import browser_overlay
 
     if not hasattr(browser_overlay, "evaluate"):
         return {"ok": False, "error": "Taking video frames needs a newer UEFN Ducky (1.2.426 or later). Update the app."}
-    from backend.tools.core.web_lookup import _access_mode, _conversation, permission_block
     from backend.tools.core.web_video import clock, contact_sheet, parse_time, video_id
-    from backend.tools.panel.panel_ui import _resolve_ask_user_conv_id
     from frontend.ui_web.conversation_attachments import build_chat_attachment_url, chat_attachments_dir
 
     vid = video_id(url)
@@ -188,10 +238,6 @@ def video_frames(url: str, frames: list[Any] | None = None, overview: int = 0, g
         return {"ok": False, "error": "Pass frames=[seconds, …] or overview=N."}
     if len(times) > _MAX_FRAMES:
         return {"ok": False, "error": f"At most {_MAX_FRAMES} frames per call."}
-    blocked = permission_block(_conversation(), _access_mode(), granted=granted)
-    if blocked:
-        return blocked
-    conv_id = _resolve_ask_user_conv_id()
     dest = chat_attachments_dir(conv_id, create=True) if conv_id else None
     if dest is None:
         return {"ok": False, "error": "Frames are saved in a chat, and no chat is open."}
@@ -209,10 +255,20 @@ def video_frames(url: str, frames: list[Any] | None = None, overview: int = 0, g
     errors: list[str] = []
     portrait = False
     for t in wanted:
-        got = browser_overlay.evaluate(pane_id, _VIDEO_FRAME_JS % t, timeout_s=30.0)
-        value = got.get("value") if got.get("ok") and isinstance(got.get("value"), dict) else {}
+        value: dict[str, Any] = {}
+        why = ""
+        for _attempt in range(3):
+            got = browser_overlay.evaluate(pane_id, _VIDEO_FRAME_JS % t, timeout_s=30.0)
+            value = got.get("value") if got.get("ok") and isinstance(got.get("value"), dict) else {}
+            if value.get("ok"):
+                break
+            why = str(value.get("error") or got.get("error") or "no frame").splitlines()[0][:200]
+            _duration, lost = _wait_for_video(pane_id, vid, wait_s=15.0)  # the player may be rebuilding
+            if lost:
+                why = lost
+                break
         if not value.get("ok"):
-            errors.append(f"{clock(t)}: {value.get('error') or got.get('error') or 'no frame'}")
+            errors.append(f"{clock(t)}: {why}")
             continue
         path = dest / f"video_{vid}_{int(round(t * 10)):06d}.jpg"
         path.write_bytes(base64.b64decode(str(value["data"])))
@@ -253,52 +309,106 @@ def _open_node(ctx: dict[str, Any]) -> dict[str, Any]:
     return open_page(url)
 
 
+def status_info() -> dict[str, Any]:
+    """Open browser panes and the DevTools connection summary."""
+    from frontend.ui_web import browser_overlay
+
+    panes = browser_overlay.list_panes()
+    cdp = browser_overlay.cdp_info()
+    return {
+        "panes": panes,
+        "pane_count": len(panes),
+        "default_pane_id": browser_overlay.pick_pane_id(),
+        "cdp": {
+            "ebwebview_dir": cdp.get("ebwebview_dir"),
+            "devtools_port": cdp.get("devtools_port"),
+            "cdp_enabled": cdp.get("cdp_enabled"),
+            "chrome_devtools_mcp_args": cdp.get("chrome_devtools_mcp_args"),
+            "hint": cdp.get("hint"),
+        },
+    }
+
+
+def navigate_page(url: str, pane_id: str = "") -> dict[str, Any]:
+    """Go to *url* in a pane, opening the Browser tab first when none is open."""
+    from frontend.ui_web import browser_overlay
+
+    address = _address(url)
+    pid = browser_overlay.pick_pane_id(pane_id)
+    if not pid:
+        problem = _check_address(address)
+        if problem:
+            return {"ok": False, "error": problem}
+        pid, why = _bring_tab_forward()
+        if not pid:
+            return {"ok": False, "error": why}
+    return browser_overlay.navigate(pid, address)
+
+
+def run_command(command: str, pane_id: str = "") -> dict[str, Any]:
+    from frontend.ui_web import browser_overlay
+
+    pid = browser_overlay.pick_pane_id(pane_id)
+    if not pid:
+        return {"ok": False, "error": "no browser pane open — open the Browser tab first"}
+    return browser_overlay.command(pid, command)
+
+
+def clear_data(kinds: str = "all") -> dict[str, Any]:
+    from frontend.ui_web import browser_overlay
+
+    return browser_overlay.clear_browsing_data(kinds)
+
+
+def site_security(pane_id: str = "") -> dict[str, Any]:
+    from frontend.ui_web import browser_overlay
+
+    return browser_overlay.site_security_info(pane_id)
+
+
+# Work that needs the Browser tab's page views, by panel RPC name. In Ducky's window it runs
+# directly; an agents' tool server (another process, with no page views) sends it there.
+_PANE_WORK: dict[str, Any] = {
+    "status": status_info,
+    "open_page": open_page,
+    "navigate": navigate_page,
+    "command": run_command,
+    "clear_data": clear_data,
+    "site_security": site_security,
+    "video_frames": video_frames,
+}
+
+
+def _pane_work(name: str, **params: Any) -> dict[str, Any]:
+    if _in_app():
+        return _PANE_WORK[name](**params)
+    return _app_call(name, params)
+
+
 def register(api) -> None:
     from frontend.ui_web import browser_overlay
 
     api.log("Browser plugin ready (ui panel + native browser pane + MCP tools + workflow node)")
     api.register_pipeline_node("browser.open", _open_node)
+    for name, fn in _PANE_WORK.items():
+        api.register_panel_rpc(name, fn)
 
     @api.tool(name="browser_status", intent=INTENT)
     def browser_status() -> str:
         """List open browser panes and Chrome DevTools connection summary."""
-        panes = browser_overlay.list_panes()
-        cdp = browser_overlay.cdp_info()
-        return _dumps(
-            {
-                "panes": panes,
-                "pane_count": len(panes),
-                "default_pane_id": browser_overlay.pick_pane_id(),
-                "cdp": {
-                    "ebwebview_dir": cdp.get("ebwebview_dir"),
-                    "devtools_port": cdp.get("devtools_port"),
-                    "cdp_enabled": cdp.get("cdp_enabled"),
-                    "chrome_devtools_mcp_args": cdp.get("chrome_devtools_mcp_args"),
-                    "hint": cdp.get("hint"),
-                },
-            }
-        )
+        return _dumps(_pane_work("status"))
 
     @api.tool(name="browser_open", intent=INTENT)
     def browser_open(url: str) -> str:
         """Show *url* to the user in the Browser tab: opens the tab when it isn't open and
         brings it to the front. https://…, http://… or localhost:<port> (a local dev server)."""
-        return _dumps(open_page(url))
+        return _dumps(_pane_work("open_page", url=url))
 
     @api.tool(name="browser_navigate", intent=INTENT)
     def browser_navigate(url: str, pane_id: str = "") -> str:
         """Navigate a browser pane to *url* (http/https or localhost:<port>; app UI blocked).
         With no Browser tab open, opens one first."""
-        address = _address(url)
-        pid = browser_overlay.pick_pane_id(pane_id)
-        if not pid:
-            problem = _check_address(address)
-            if problem:
-                return _dumps({"ok": False, "error": problem})
-            pid, why = _bring_tab_forward()
-            if not pid:
-                return _dumps({"ok": False, "error": why})
-        return _dumps(browser_overlay.navigate(pid, address))
+        return _dumps(_pane_work("navigate", url=url, pane_id=pane_id))
 
     @api.tool(name="browser_video_frames", intent=VIDEO_INTENT)
     def browser_video_frames(url: str, frames: list[float | str] | None = None, overview: int = 0) -> str:
@@ -311,15 +421,12 @@ def register(api) -> None:
             return _dumps(video_frames(url, frames=frames, overview=overview))
         from backend.tools.core.web_lookup import _asking_first
 
-        return _dumps(_asking_first(video_frames, url, frames=frames, overview=overview))
+        return _dumps(_asking_first(_video_frames_tool, url, frames=frames, overview=overview))
 
     @api.tool(name="browser_command", intent=INTENT)
     def browser_command(command: str, pane_id: str = "") -> str:
         """Run back / forward / reload / stop on a browser pane."""
-        pid = browser_overlay.pick_pane_id(pane_id)
-        if not pid:
-            return _dumps({"ok": False, "error": "no browser pane open — open the Browser tab first"})
-        return _dumps(browser_overlay.command(pid, command))
+        return _dumps(_pane_work("command", command=command, pane_id=pane_id))
 
     @api.tool(name="browser_cdp_info", intent=INTENT)
     def browser_cdp_info() -> str:
@@ -329,7 +436,7 @@ def register(api) -> None:
     @api.tool(name="browser_clear_data", intent=INTENT)
     def browser_clear_data(kinds: str = "all") -> str:
         """Clear in-app browser profile data. kinds: all | cache | cookies | history."""
-        return _dumps(browser_overlay.clear_browsing_data(kinds))
+        return _dumps(_pane_work("clear_data", kinds=kinds))
 
     @api.tool(name="browser_runtime_info", intent=INTENT)
     def browser_runtime_info() -> str:
@@ -339,4 +446,4 @@ def register(api) -> None:
     @api.tool(name="browser_site_security", intent=INTENT)
     def browser_site_security(pane_id: str = "") -> str:
         """Chrome-like site security: connection, certificate, cookies, engine protections."""
-        return _dumps(browser_overlay.site_security_info(pane_id))
+        return _dumps(_pane_work("site_security", pane_id=pane_id))
