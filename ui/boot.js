@@ -415,6 +415,11 @@
       '<p class="browser-settings-status" id="bs-status"></p>' +
       "</section>" +
       '<section class="browser-settings-section">' +
+      "<h3>Logins</h3>" +
+      '<label class="browser-settings-check"><input type="checkbox" id="bs-keep-logins" /> Keep logins, locked with Windows Hello</label>' +
+      '<p class="browser-settings-hint">Off: logins live in memory only and are gone when Ducky closes. On: logins are saved, and while Ducky is closed only your face, fingerprint or PIN unlocks them. Applies on next start.</p>' +
+      "</section>" +
+      '<section class="browser-settings-section">' +
       "<h3>AI / DevTools</h3>" +
       '<label class="browser-settings-check"><input type="checkbox" id="bs-cdp" /> Enable remote debugging (CDP)</label>' +
       '<p class="browser-settings-hint">Off by default so Cloudflare / “verify you are human” works like Chrome. Turn on only for chrome-devtools-mcp — applies on next start.</p>' +
@@ -464,6 +469,8 @@
     customRow.style.display = searchEngineValue === "custom" ? "" : "none";
     var cdpEl = settingsEl.querySelector("#bs-cdp");
     if (cdpEl) cdpEl.checked = !!p.enableCdp;
+    var keepEl = settingsEl.querySelector("#bs-keep-logins");
+    if (keepEl) keepEl.checked = !!p.keepLogins;
 
     if (searchChoice) {
       try {
@@ -503,7 +510,9 @@
     });
     settingsEl.querySelector("#bs-save").addEventListener("click", function () {
       var cdp = settingsEl.querySelector("#bs-cdp");
+      var keep = settingsEl.querySelector("#bs-keep-logins");
       setPrefs({
+        keepLogins: !!(keep && keep.checked),
         homepage: home.value.trim() || HOMEPAGE_DEFAULT,
         searchEngine: searchEngineValue,
         searchCustom: custom.value.trim(),
