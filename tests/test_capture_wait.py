@@ -60,7 +60,7 @@ def test_capture_settles_first_and_resets_scroll_once_after_open(monkeypatch) ->
     monkeypatch.setitem(sys.modules, "frontend.ui_web.browser_overlay", overlay)
     monkeypatch.setitem(sys.modules, "frontend.ui_web.tool_captures", captures)
     monkeypatch.setattr(plugin, "_bring_tab_forward", lambda: ("pane1", ""))
-    monkeypatch.setattr(plugin, "_sandbox_page", lambda pane_id, conv_id: ("pane1", ""))
+    monkeypatch.setattr(plugin, "_agent_page", lambda pane_id, conv_id: ("pane1", ""))
     plugin._FRESH_PANES.clear()
 
     assert plugin.open_page("localhost:5199")["ok"] is True
