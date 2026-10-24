@@ -34,6 +34,8 @@ You drive the **in-app browser** through the **browser** Store plugin (`browser_
 | `browser_command` | `back` / `forward` / `reload` / `stop` |
 | `browser_cdp_info` | Full EBWebView path + `chrome_devtools_mcp_args` |
 | `browser_video_frames` | Frames from any moment of a YouTube video, from the player in the tab |
+| `browser_tabs` | The page tabs inside the Browser: `pane_id`, url, title, which is on screen |
+| `browser_new_tab` / `browser_switch_tab` / `browser_close_tab` | Open (returns its `pane_id`), show or close a page tab; every `browser_*` tool takes `pane_id`, default the tab on screen |
 | `browser_look` | Page text + what is clickable on screen, each with a ref (`e1`, `e2`…) |
 | `browser_click` / `browser_type` / `browser_press` | Click a ref, type into a ref (`clear`, `submit`), press a key or `ScrollDown`; each returns the page after |
 | `browser_capture` / `browser_read` | A picture / all text of the page |

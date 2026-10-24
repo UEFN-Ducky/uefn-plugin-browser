@@ -83,6 +83,35 @@ def test_site_work_asks_once_then_runs_again(monkeypatch, answer: str) -> None:
         assert out["ok"] is False and saved == [] and len(runs) == 1
 
 
+def test_agents_open_switch_and_close_page_tabs(monkeypatch) -> None:
+    app = "plugin:browser:browser"
+    overlay = _overlay(monkeypatch, "https://x.com/", [])
+    panes = [{"pane_id": f"{app}::t1", "url": "https://x.com/", "title": "X"}]
+    sent: list[tuple] = []
+
+    def push(app_tab, action, **data):
+        sent.append((app_tab, action, data))
+        if action == "new":
+            panes.append({"pane_id": f"{app_tab}::{data['tab']}", "url": data["url"], "title": ""})
+        return {"ok": True}
+
+    overlay.list_panes = lambda: panes
+    overlay.push_tab_command = push
+    overlay.pick_pane_id = lambda pid="", allow_fallback=True: (
+        pid if any(p["pane_id"] == pid for p in panes) else ("" if pid else panes[0]["pane_id"]))
+    overlay.normalize_url = lambda u: u
+    overlay.is_app_ui_url = lambda u: False
+    monkeypatch.setattr(plugin, "_bring_tab_forward", lambda: (f"{app}::t1", ""))
+
+    out = plugin.new_tab("https://linkedin.com/feed")
+    assert out["ok"] and out["pane_id"].startswith(f"{app}::a") and sent[-1][1] == "new"
+    listed = plugin.tabs_info()["tabs"]
+    assert [t["active"] for t in listed] == [True, False]
+    assert plugin.switch_tab(out["pane_id"]) == {"ok": True} and sent[-1][1] == "switch"
+    assert plugin.close_tab(out["pane_id"]) == {"ok": True} and sent[-1][:2] == (app, "close")
+    assert plugin.close_tab(f"{app}::nope")["ok"] is False
+
+
 def test_bad_refs_and_keys_are_refused_before_the_page() -> None:
     assert "isn't a ref" in plugin._click_ref("pane1", "e1'); alert(1); ('")
     assert "isn't a key" in plugin._press("pane1", "F13")

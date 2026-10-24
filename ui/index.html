@@ -26,6 +26,65 @@
     overflow: hidden;
   }
   #app { display: flex; flex-direction: column; width: 100%; height: 100%; }
+  #tabstrip {
+    display: flex;
+    align-items: flex-end;
+    gap: 2px;
+    padding: 4px 6px 0;
+    background: var(--bg);
+    flex: 0 0 auto;
+    min-width: 0;
+  }
+  #tabs { display: flex; gap: 2px; min-width: 0; flex: 0 1 auto; overflow: hidden; }
+  .ptab {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 60px;
+    max-width: 200px;
+    flex: 1 1 160px;
+    height: 28px;
+    padding: 0 6px 0 10px;
+    border-radius: 7px 7px 0 0;
+    background: transparent;
+    color: var(--text-dim);
+    cursor: pointer;
+    user-select: none;
+  }
+  .ptab:hover { background: rgba(255, 255, 255, 0.04); color: var(--text); }
+  .ptab.is-active { background: var(--toolbar-bg); color: var(--text); }
+  .ptab-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ptab.is-loading .ptab-title { opacity: 0.7; }
+  .ptab-close {
+    flex: 0 0 auto;
+    width: 18px;
+    height: 18px;
+    border: none;
+    border-radius: 4px;
+    background: transparent;
+    color: inherit;
+    cursor: pointer;
+    font-size: 14px;
+    line-height: 1;
+    padding: 0;
+  }
+  .ptab-close:hover { background: rgba(255, 255, 255, 0.1); }
+  #newtab {
+    flex: 0 0 auto;
+    width: 26px;
+    height: 26px;
+    margin-bottom: 1px;
+    border: none;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--text-dim);
+    font-size: 16px;
+    cursor: pointer;
+  }
+  #newtab:hover { background: rgba(255, 255, 255, 0.07); color: var(--text); }
+  /* The page as a picture while Ducky's own UI covers the live (native) page. */
+  #snap { position: absolute; inset: 0; width: 100%; height: 100%; display: none; pointer-events: none; }
+  #snap.is-on { display: block; }
   #toolbar {
     display: flex;
     align-items: center;
@@ -277,6 +336,10 @@
 <body>
 <div id="app">
   <div id="site-info" role="dialog" aria-label="Site security information"></div>
+  <div id="tabstrip">
+    <div id="tabs" role="tablist" aria-label="Browser tabs"></div>
+    <button type="button" id="newtab" title="New tab (Ctrl+T)" aria-label="New tab">+</button>
+  </div>
   <div id="toolbar">
     <button id="back" title="Back" aria-label="Go back" disabled>
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 18l-6-6 6-6"/></svg>
@@ -316,6 +379,7 @@
   <div id="progress"></div>
   <div id="content">
     <div id="notice">Connecting to the browser pane…</div>
+    <img id="snap" alt="" />
   </div>
   <div id="suggest" role="listbox" aria-label="History suggestions"></div>
 </div>
@@ -361,8 +425,133 @@ window.addEventListener("message", (ev) => {
     else reject(new Error(d.error || "bridge error"));
     return;
   }
-  if (d.event && d.event.type === "browser_pane_state") onPaneState(d.event);
+  const push = d.event;
+  if (!push) return;
+  if (push.type === "browser_pane_state") onPaneState(push);
+  else if (push.type === "browser_pane_new_window" && push.url) openTab(push.url);
+  else if (push.type === "browser_tab_command") onTabCommand(push);
+  else if (push.type === "browser_pane_snapshot") showSnapshot(push.data || "");
 });
+
+/* ── Page tabs: each is its own native pane, `<this tab>::<id>` on the host ── */
+
+const TAB_ID = /^[A-Za-z0-9_-]{1,24}$/;
+const tabs = []; // { id, url, title, loading }
+let activeTab = "";
+
+function newTabId() {
+  return "t" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+}
+
+function subOf(paneId) {
+  const i = String(paneId || "").indexOf("::");
+  return i >= 0 ? paneId.slice(i + 2) : "";
+}
+
+function tabById(id) {
+  return tabs.find((t) => t.id === id) || null;
+}
+
+/** Every page call goes to the tab on screen unless it names another. */
+function callTab(method, params = {}) {
+  return call(method, Object.assign({ tab: activeTab }, params));
+}
+
+function renderTabs() {
+  const box = document.getElementById("tabs");
+  box.innerHTML = "";
+  for (const t of tabs) {
+    const el = document.createElement("div");
+    el.className = "ptab" + (t.id === activeTab ? " is-active" : "") + (t.loading ? " is-loading" : "");
+    el.setAttribute("role", "tab");
+    el.setAttribute("aria-selected", t.id === activeTab ? "true" : "false");
+    el.title = t.title || t.url || "New tab";
+    el.innerHTML = '<span class="ptab-title"></span><button type="button" class="ptab-close" aria-label="Close tab">×</button>';
+    el.querySelector(".ptab-title").textContent = t.title || hostnameOf(t.url) || "New tab";
+    el.addEventListener("click", () => activateTab(t.id));
+    el.addEventListener("auxclick", (e) => { if (e.button === 1) closeTab(t.id); });
+    el.querySelector(".ptab-close").addEventListener("click", (e) => {
+      e.stopPropagation();
+      closeTab(t.id);
+    });
+    box.appendChild(el);
+  }
+}
+
+function hidePane(id) {
+  call("browser.bounds", { tab: id, x: 0, y: 0, width: 0, height: 0, visible: false }).catch(() => {});
+}
+
+function activateTab(id) {
+  const t = tabById(id);
+  if (!t) return;
+  if (activeTab && activeTab !== id) hidePane(activeTab);
+  activeTab = id;
+  closeSuggest();
+  closeSiteInfo();
+  showSnapshot("");
+  renderTabs();
+  paintTab(t);
+  lastRectKey = "";
+  reportBounds();
+}
+
+function openTab(url, id) {
+  const tid = id && TAB_ID.test(id) ? id : newTabId();
+  if (tabById(tid)) {
+    activateTab(tid);
+    return tid;
+  }
+  const target = url ? toNavigable(url) : homepage;
+  tabs.push({ id: tid, url: target, title: "", loading: true });
+  activateTab(tid);
+  call("browser.open", { tab: tid, url: target })
+    .then((state) => {
+      if (state && state.ok === false) throw new Error(state.error || "open failed");
+      if (state) onPaneState(Object.assign({}, state, { pane_id: state.pane_id || "::" + tid }));
+    })
+    .catch((err) => {
+      if (tid !== activeTab) return;
+      els.notice.textContent = String(err && err.message ? err.message : err);
+      els.notice.classList.add("failed");
+      els.notice.classList.remove("hidden");
+    });
+  lastRectKey = "";
+  reportBounds();
+  return tid;
+}
+
+function closeTab(id) {
+  const i = tabs.findIndex((t) => t.id === id);
+  if (i < 0) return;
+  tabs.splice(i, 1);
+  call("browser.close", { tab: id }).catch(() => {});
+  if (activeTab === id) {
+    activeTab = "";
+    const next = tabs[i] || tabs[i - 1];
+    if (next) activateTab(next.id);
+    else openTab(homepage);
+  }
+  renderTabs();
+}
+
+function onTabCommand(ev) {
+  const id = typeof ev.tab === "string" ? ev.tab : "";
+  if (ev.action === "new") openTab(typeof ev.url === "string" ? ev.url : "", id);
+  else if (ev.action === "switch" && id) activateTab(id);
+  else if (ev.action === "close" && id) closeTab(id);
+}
+
+function showSnapshot(data) {
+  const img = document.getElementById("snap");
+  if (data) {
+    img.src = data;
+    img.classList.add("is-on");
+  } else {
+    img.classList.remove("is-on");
+    img.removeAttribute("src");
+  }
+}
 
 function call(method, params = {}) {
   const id = (crypto.randomUUID && crypto.randomUUID()) || String(Math.random());
@@ -470,7 +659,7 @@ function placeSiteInfo() {
 
 function openSiteInfo() {
   closeSuggest();
-  call("browser.site_security", {})
+  callTab("browser.site_security", {})
     .then((res) => {
       if (!res || res.ok === false) {
         throw new Error((res && res.error) || "site security unavailable");
@@ -548,6 +737,18 @@ function openSiteInfo() {
 }
 
 function onPaneState(s) {
+  const t = tabById(subOf(s.pane_id));
+  if (!t) return;
+  t.url = s.url || t.url;
+  t.title = s.title || "";
+  t.loading = !!s.loading;
+  t.state = s;
+  renderTabs();
+  if (t.id === activeTab) paintTab(t);
+}
+
+function paintTab(t) {
+  const s = t.state || { url: t.url, loading: t.loading };
   currentUrl = s.url || "";
   loading = !!s.loading;
   els.back.disabled = !s.can_back;
@@ -708,7 +909,7 @@ function navigateTo(url) {
   els.url.value = target;
   currentUrl = target;
   paintSecurity(target);
-  call("browser.navigate", { url: target })
+  callTab("browser.navigate", { url: target })
     .then((res) => {
       if (res && res.ok === false) {
         els.notice.textContent = res.error || "Navigation failed";
@@ -725,11 +926,12 @@ function navigateTo(url) {
   reportBounds();
 }
 
-els.back.addEventListener("click", () => call("browser.command", { command: "back" }).catch(() => {}));
-els.forward.addEventListener("click", () => call("browser.command", { command: "forward" }).catch(() => {}));
+els.back.addEventListener("click", () => callTab("browser.command", { command: "back" }).catch(() => {}));
+els.forward.addEventListener("click", () => callTab("browser.command", { command: "forward" }).catch(() => {}));
 els.reload.addEventListener("click", () =>
-  call("browser.command", { command: loading ? "stop" : "reload" }).catch(() => {}),
+  callTab("browser.command", { command: loading ? "stop" : "reload" }).catch(() => {}),
 );
+document.getElementById("newtab").addEventListener("click", () => openTab(homepage));
 els.home.addEventListener("click", () => navigateTo(homepage));
 els.settings.addEventListener("click", () => {
   closeSuggest();
@@ -810,26 +1012,38 @@ document.addEventListener("keydown", (e) => {
     closeSiteInfo();
     return;
   }
-  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "l") {
+  const k = e.key.toLowerCase();
+  if ((e.ctrlKey || e.metaKey) && k === "l") {
     e.preventDefault();
     els.url.focus();
+  } else if ((e.ctrlKey || e.metaKey) && k === "t") {
+    e.preventDefault();
+    openTab(homepage);
+  } else if ((e.ctrlKey || e.metaKey) && k === "w") {
+    e.preventDefault();
+    closeTab(activeTab);
+  } else if (e.ctrlKey && k === "tab" && tabs.length > 1) {
+    e.preventDefault();
+    const i = tabs.findIndex((t) => t.id === activeTab);
+    activateTab(tabs[(i + (e.shiftKey ? tabs.length - 1 : 1)) % tabs.length].id);
   }
 });
 
 let lastRectKey = "";
 function reportBounds() {
+  if (!activeTab) return;
   const r = els.content.getBoundingClientRect();
   // Hide native WebView2 while the address bar is focused (or site-info is open).
   // Otherwise the OS pane sits on top of HTML suggestions and steals focus/clicks —
   // which is what made the URL bar feel "broken". Prefer bounds.visible over
   // ui_cover refcount (that path used to stick and leave every pane black).
   const visible = !siteInfoOpen && !urlFocused;
-  const key = [r.x, r.y, r.width, r.height, visible ? 1 : 0].map((n) => Math.round(n * 10)).join(",");
+  const key = activeTab + "," + [r.x, r.y, r.width, r.height, visible ? 1 : 0].map((n) => Math.round(n * 10)).join(",");
   if (key === lastRectKey) return;
   // Only lock the key after a successful pin — a failed first call used to
   // permanently skip retries at the same size (YouTube in URL, black content).
   lastRectKey = key;
-  call("browser.bounds", {
+  callTab("browser.bounds", {
     x: r.x,
     y: r.y,
     width: r.width,
@@ -877,16 +1091,19 @@ async function boot(attempt) {
     // Lift any stuck cover from a previous tab session.
     if (uiCovered) setUiCover(false);
     await loadPrefs();
-    // Remount: reconnect with "" so we keep the existing page. New pane: homepage.
-    let startUrl = homepage || HOMEPAGE_DEFAULT;
-    try {
-      const prev = await call("browser.state", {});
-      if (prev && prev.ok !== false && (prev.url || prev.ready)) startUrl = "";
-    } catch (_) { /* first open */ }
-    const state = await call("browser.open", { url: startUrl });
-    if (state && state.ok === false) throw new Error(state.error || "open failed");
-    lastRectKey = "";
-    reportBounds();
+    // Reload / remount: reattach to the page tabs still open on the host.
+    const open = await call("browser.tabs", {});
+    if (open && open.ok === false) throw new Error(open.error || "browser panes unavailable");
+    const panes = ((open && open.panes) || []).filter((p) => TAB_ID.test(subOf(p.pane_id)));
+    panes.sort((a, b) => (subOf(a.pane_id) < subOf(b.pane_id) ? -1 : 1));
+    if (!panes.length) {
+      openTab(homepage || HOMEPAGE_DEFAULT);
+    } else if (!tabs.length) {
+      for (const p of panes) tabs.push({ id: subOf(p.pane_id), url: p.url || "", title: p.title || "", loading: !!p.loading, state: p });
+      const shown = panes.find((p) => p.visible) || panes[panes.length - 1];
+      activateTab(subOf(shown.pane_id));
+      for (const t of tabs) call("browser.open", { tab: t.id, url: "" }).catch(() => {});
+    }
     // Second tick after layout — first rect is often 0×0 and left the pane invisible.
     requestAnimationFrame(() => {
       lastRectKey = "";
@@ -896,7 +1113,6 @@ async function boot(attempt) {
         reportBounds();
       }, 100);
     });
-    if (state) onPaneState(state);
   } catch (err) {
     if (attempt < 20) {
       setTimeout(() => boot(attempt + 1), 500);

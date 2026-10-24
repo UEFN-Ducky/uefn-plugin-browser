@@ -1,6 +1,6 @@
 /**
- * Browser plugin shell.boot — header dropdown (list / + New browser / Settings).
- * No "default shell" row. Multi-tab via browser_pane_new_window + data-tab-id.
+ * Browser plugin shell.boot — header dropdown: Open browser / Settings.
+ * One Browser editor tab; its page tabs live inside it (ui/index.html tab strip).
  */
 (function () {
   "use strict";
@@ -22,10 +22,7 @@
   var menuEl = null;
   var settingsEl = null;
   var triggerBtn = null;
-  var badgeEl = null;
   var open = false;
-  var mo = null;
-  var pollTimer = null;
   var searchChoice = null;
   var searchEngineValue = "duckduckgo";
 
@@ -87,21 +84,9 @@
     return ids;
   }
 
-  function activeTabId() {
-    var el = document.querySelector('.editor-tab.is-active[data-tab-id^="' + TAB_PREFIX + '"]');
-    return el ? el.getAttribute("data-tab-id") : "";
-  }
-
   function activateTab(tabId) {
     var el = document.querySelector('[data-tab-id="' + cssEscape(tabId) + '"]');
     if (el) el.click();
-  }
-
-  function closeTab(tabId) {
-    var el = document.querySelector('[data-tab-id="' + cssEscape(tabId) + '"]');
-    if (!el) return;
-    var btn = el.querySelector(".editor-tab-close-btn");
-    if (btn) btn.click();
   }
 
   function cssEscape(s) {
@@ -109,34 +94,25 @@
     return String(s).replace(/["\\]/g, "\\$&");
   }
 
-  function newBrowser() {
-    var url = homepage();
+  /** Show the Browser tab, opening it when it isn't open. New pages are tabs inside it. */
+  function openBrowser() {
     // Close the dropdown first — never stack menu DOM work on a WebView2 boot.
     hideMenu();
     var ids = listTabIds();
-    // First browser: open the singleton panel tab (same as header `panel:browser`).
-    // Do NOT use browser_pane_new_window here — that path was freezing on cold start.
-    if (!ids.length) {
-      if (typeof window.__duckyOpenPluginUiTab === "function") {
-        window.__duckyOpenPluginUiTab(PLUGIN_ID, PANEL_ID);
-        return;
-      }
-      // Pre-helper hosts: temporarily unhook our capture click and fire the button.
-      var btn = findTrigger();
-      if (btn) {
-        btn.removeEventListener("click", onTriggerClick, true);
-        btn.click();
-        btn.addEventListener("click", onTriggerClick, true);
-      }
+    if (ids.length) {
+      activateTab(ids[0]);
       return;
     }
-    // Additional browsers: new instance tab + shared WebView2 env (host serializes).
-    if (typeof window.__uefnPanelPush === "function") {
-      window.__uefnPanelPush({
-        type: "browser_pane_new_window",
-        pane_id: TAB_PREFIX,
-        url: url,
-      });
+    if (typeof window.__duckyOpenPluginUiTab === "function") {
+      window.__duckyOpenPluginUiTab(PLUGIN_ID, PANEL_ID);
+      return;
+    }
+    // Pre-helper hosts: temporarily unhook our capture click and fire the button.
+    var btn = findTrigger();
+    if (btn) {
+      btn.removeEventListener("click", onTriggerClick, true);
+      btn.click();
+      btn.addEventListener("click", onTriggerClick, true);
     }
   }
 
@@ -160,35 +136,11 @@
       if (ev && ev.type === "browser_pane_state" && ev.pane_id) {
         paneState[ev.pane_id] = ev;
         if (ev.url) pushHistory(ev.url, ev.title || "");
-        refreshBadge();
-        if (open) renderMenuBody();
       }
       if (typeof prev === "function") prev(ev);
     }
     fan.__browserBootWrapped = true;
     window.__uefnPanelPush = fan;
-  }
-
-  function refreshBadge() {
-    var btn = findTrigger();
-    if (!btn) return;
-    triggerBtn = btn;
-    var n = listTabIds().length;
-    if (!badgeEl) {
-      badgeEl = document.createElement("span");
-      badgeEl.className = "terminal-header-badge browser-header-badge";
-    }
-    if (n > 0) {
-      badgeEl.textContent = String(n);
-      if (!badgeEl.parentNode) {
-        btn.style.position = "relative";
-        btn.appendChild(badgeEl);
-      }
-      btn.classList.add("has-terminals");
-    } else if (badgeEl.parentNode) {
-      badgeEl.parentNode.removeChild(badgeEl);
-      btn.classList.remove("has-terminals");
-    }
   }
 
   function hideMenu() {
@@ -208,71 +160,6 @@
     return { top: rect.bottom + MENU_GAP, left: left };
   }
 
-  function renderMenuBody() {
-    if (!menuEl) return;
-    var list = menuEl.querySelector(".browser-header-list");
-    if (!list) return;
-    var ids = listTabIds();
-    var active = activeTabId();
-    list.innerHTML = "";
-    if (!ids.length) {
-      var empty = document.createElement("p");
-      empty.className = "terminal-header-empty";
-      empty.textContent = "No browsers";
-      list.appendChild(empty);
-      return;
-    }
-    ids.forEach(function (id) {
-      var st = paneState[id] || {};
-      var row = document.createElement("div");
-      row.className = "terminal-header-item" + (id === active ? " is-active" : "");
-      var main = document.createElement("button");
-      main.type = "button";
-      main.className = "terminal-header-item-main";
-      var name = document.createElement("span");
-      name.className = "terminal-header-item-name";
-      name.textContent = st.title || st.url || "Browser";
-      var meta = document.createElement("span");
-      meta.className = "terminal-header-item-meta";
-      var urlHint = document.createElement("span");
-      urlHint.className = "terminal-header-item-shell";
-      urlHint.textContent = shortenUrl(st.url || "");
-      meta.appendChild(urlHint);
-      main.appendChild(name);
-      main.appendChild(meta);
-      main.addEventListener("click", function () {
-        activateTab(id);
-        hideMenu();
-      });
-      var close = document.createElement("button");
-      close.type = "button";
-      close.className = "terminal-header-item-close icon-btn no-drag";
-      close.title = "Close browser";
-      close.setAttribute("aria-label", "Close browser");
-      close.innerHTML =
-        '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/></svg>';
-      close.addEventListener("click", function (e) {
-        e.stopPropagation();
-        closeTab(id);
-        hideMenu();
-        setTimeout(refreshBadge, 80);
-      });
-      row.appendChild(main);
-      row.appendChild(close);
-      list.appendChild(row);
-    });
-  }
-
-  function shortenUrl(u) {
-    if (!u) return "";
-    try {
-      var x = new URL(u);
-      return x.hostname.replace(/^www\./, "");
-    } catch (_) {
-      return u.slice(0, 24);
-    }
-  }
-
   function showMenu(trigger) {
     hideMenu();
     wrapPanelPush();
@@ -285,37 +172,20 @@
     menuEl.style.top = pos.top + "px";
     menuEl.style.left = pos.left + "px";
     menuEl.innerHTML =
-      '<div class="browser-header-list terminal-header-list"></div>' +
+      '<button type="button" class="terminal-header-new-btn browser-header-open-btn">' +
+      '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">' +
+      '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 010 18M12 3a14 14 0 000 18"/></svg>' +
+      "<span>Open browser</span></button>" +
       '<button type="button" class="terminal-header-new-btn browser-header-settings-btn">' +
       '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">' +
       '<circle cx="12" cy="12" r="3"/><path d="M12 1v2M12 21v2M4.2 4.2l1.4 1.4M18.4 18.4l1.4 1.4M1 12h2M21 12h2M4.2 19.8l1.4-1.4M18.4 5.6l1.4-1.4"/>' +
-      "</svg><span>Settings</span></button>" +
-      '<button type="button" class="terminal-header-new-btn browser-header-new-btn">' +
-      '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">' +
-      '<path d="M12 5v14M5 12h14"/></svg><span>New browser</span></button>';
+      "</svg><span>Settings</span></button>";
     document.body.appendChild(menuEl);
-    renderMenuBody();
+    menuEl.querySelector(".browser-header-open-btn").addEventListener("click", openBrowser);
     menuEl.querySelector(".browser-header-settings-btn").addEventListener("click", function () {
       hideMenu();
       openSettings();
     });
-    menuEl.querySelector(".browser-header-new-btn").addEventListener("click", function () {
-      newBrowser();
-      setTimeout(refreshBadge, 200);
-    });
-    // Enrich labels from live panes when API exists.
-    var a = api();
-    if (a) {
-      Promise.resolve(a.browser_pane_list())
-        .then(function (res) {
-          var panes = (res && res.panes) || [];
-          panes.forEach(function (p) {
-            if (p && p.pane_id) paneState[p.pane_id] = p;
-          });
-          if (open) renderMenuBody();
-        })
-        .catch(function () {});
-    }
   }
 
   function onTriggerClick(e) {
@@ -867,19 +737,6 @@
     document.addEventListener("keydown", onKey, true);
     window.addEventListener("ducky:browser-settings", onOpenSettingsEvent);
     wrapPanelPush();
-    refreshBadge();
-    // Throttle: tab chrome mutates a lot; badge only needs a cheap recount.
-    var moScheduled = false;
-    mo = new MutationObserver(function () {
-      if (moScheduled) return;
-      moScheduled = true;
-      setTimeout(function () {
-        moScheduled = false;
-        refreshBadge();
-      }, 100);
-    });
-    mo.observe(document.body, { childList: true, subtree: true });
-    pollTimer = setInterval(refreshBadge, 1500);
   }
 
   function cleanup() {
@@ -889,11 +746,8 @@
     document.removeEventListener("mousedown", onDocDown, true);
     document.removeEventListener("keydown", onKey, true);
     window.removeEventListener("ducky:browser-settings", onOpenSettingsEvent);
-    if (mo) mo.disconnect();
-    if (pollTimer) clearInterval(pollTimer);
     var css = document.getElementById("browser-plugin-boot-css");
     if (css) css.remove();
-    if (badgeEl && badgeEl.parentNode) badgeEl.parentNode.removeChild(badgeEl);
   }
 
   window.__duckyPluginBootCleanups = window.__duckyPluginBootCleanups || {};

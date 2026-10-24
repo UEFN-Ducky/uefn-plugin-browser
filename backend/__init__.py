@@ -721,10 +721,75 @@ def _site_work(name: str, **params: Any) -> dict[str, Any]:
     return {"ok": False, "error": why} if why else _pane_work(name, **params)
 
 
+def _page_tabs() -> list[dict[str, Any]]:
+    """The page tabs inside the Browser tab (panes ``<Browser tab>::<page tab>``)."""
+    from frontend.ui_web import browser_overlay
+
+    return [p for p in browser_overlay.list_panes() if "::" in str(p.get("pane_id") or "")]
+
+
+def tabs_info() -> dict[str, Any]:
+    from frontend.ui_web import browser_overlay
+
+    active = browser_overlay.pick_pane_id()
+    return {"ok": True, "tabs": [
+        {"pane_id": p["pane_id"], "url": p.get("url", ""), "title": p.get("title", ""),
+         "active": p["pane_id"] == active} for p in _page_tabs()]}
+
+
+def new_tab(url: str = "") -> dict[str, Any]:
+    """Open a page tab in the Browser tab (opening the Browser first) and wait for it."""
+    import secrets
+
+    from frontend.ui_web import browser_overlay
+
+    address = _address(url) if url else ""
+    problem = _check_address(address) if address else ""
+    if problem:
+        return {"ok": False, "error": problem}
+    pid, why = _bring_tab_forward()
+    if not pid:
+        return {"ok": False, "error": why}
+    app = pid.split("::", 1)[0]
+    tab = "a" + secrets.token_hex(4)
+    sent = browser_overlay.push_tab_command(app, "new", url=address, tab=tab)
+    if not sent.get("ok"):
+        return sent
+    want = f"{app}::{tab}"
+    deadline = time.monotonic() + _TAB_WAIT_S
+    while time.monotonic() < deadline:
+        if browser_overlay.pick_pane_id(want, allow_fallback=False) == want:
+            _FRESH_PANES.add(want)
+            return {"ok": True, "pane_id": want, "url": address}
+        time.sleep(0.25)
+    return {"ok": False, "error": f"The new tab didn't open within {_TAB_WAIT_S:.0f} s. Is the Browser tab on an older version?"}
+
+
+def _tab_command(action: str, pane_id: str) -> dict[str, Any]:
+    from frontend.ui_web import browser_overlay
+
+    app, _, tab = (pane_id or "").partition("::")
+    if not tab or not any(p["pane_id"] == pane_id for p in _page_tabs()):
+        return {"ok": False, "error": f"No page tab {pane_id!r}. browser_tabs lists them."}
+    return browser_overlay.push_tab_command(app, action, tab=tab)
+
+
+def switch_tab(pane_id: str) -> dict[str, Any]:
+    return _tab_command("switch", pane_id)
+
+
+def close_tab(pane_id: str) -> dict[str, Any]:
+    return _tab_command("close", pane_id)
+
+
 # Work that needs the Browser tab's page views, by panel RPC name. In Ducky's window it runs
 # directly; an agents' tool server (another process, with no page views) sends it there.
 _PANE_WORK: dict[str, Any] = {
     "status": status_info,
+    "tabs": tabs_info,
+    "new_tab": new_tab,
+    "switch_tab": switch_tab,
+    "close_tab": close_tab,
     "open_page": open_page,
     "navigate": navigate_page,
     "command": run_command,
@@ -831,6 +896,28 @@ def register(api) -> None:
         """Press a key in the Browser tab: Enter, Tab, Escape, Backspace, Delete, Space, Arrow…, PageUp,
         PageDown, Home, End; ScrollDown / ScrollUp scroll the page. Returns the page after."""
         return _dumps(_site_work("press_page", key=key, pane_id=pane_id))
+
+    @api.tool(name="browser_tabs", intent=INTENT)
+    def browser_tabs() -> str:
+        """The page tabs open inside the Browser tab: pane_id, url, title, and which is on screen.
+        Every browser_* tool takes pane_id to act on one tab; without it, the tab on screen."""
+        return _dumps(_pane_work("tabs"))
+
+    @api.tool(name="browser_new_tab", intent=INTENT)
+    def browser_new_tab(url: str = "") -> str:
+        """Open a new page tab inside the Browser tab (the homepage when url is empty) and show it.
+        Returns its pane_id."""
+        return _dumps(_pane_work("new_tab", url=url))
+
+    @api.tool(name="browser_switch_tab", intent=INTENT)
+    def browser_switch_tab(pane_id: str) -> str:
+        """Show one of the Browser's page tabs (pane_id from browser_tabs)."""
+        return _dumps(_pane_work("switch_tab", pane_id=pane_id))
+
+    @api.tool(name="browser_close_tab", intent=INTENT)
+    def browser_close_tab(pane_id: str) -> str:
+        """Close one of the Browser's page tabs (pane_id from browser_tabs)."""
+        return _dumps(_pane_work("close_tab", pane_id=pane_id))
 
     @api.tool(name="browser_agent_sites", intent=INTENT)
     def browser_agent_sites(remove: str = "") -> str:
