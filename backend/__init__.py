@@ -82,6 +82,28 @@ _VIDEO_FRAME_JS = r"""(async () => {
   return {ok: true, t: v.currentTime, width: c.width, height: c.height,
           source: v.videoWidth + 'x' + v.videoHeight, data: url.slice(url.indexOf(',') + 1)};
 })()"""
+# Before a capture: the page loaded, something is drawn, then 300 ms with no DOM change
+# (10 s at most), so a page that renders late (a fetch, a chart) isn't captured blank.
+# TOP=1 scrolls to the top first (the first capture after browser_open).
+_SETTLE_JS = r"""(async () => {
+  const TOP = %d, IDLE = 300, end = Date.now() + 10000;
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  while (document.readyState !== 'complete' && Date.now() < end) await sleep(50);
+  const drawn = () => !!document.body && (document.body.innerText.trim().length > 0 ||
+    !!document.body.querySelector('canvas, svg, img, video, iframe'));
+  while (!drawn() && Date.now() < end) await sleep(50);
+  let last = Date.now();
+  const seen = new MutationObserver(() => { last = Date.now(); });
+  seen.observe(document, {subtree: true, childList: true, attributes: true, characterData: true});
+  while (Date.now() - last < IDLE && Date.now() < end) await sleep(50);
+  seen.disconnect();
+  if (TOP) window.scrollTo(0, 0);
+  await new Promise((r) => requestAnimationFrame(() => r()));
+  return {settled: Date.now() < end, drawn: drawn()};
+})()"""
+# Panes opened by browser_open whose next capture starts at the top of the page.
+_FRESH_PANES: set[str] = set()
+
 # A dev server typed without http:// ("localhost:5199/x") is still an address.
 _LOCAL_HOST = re.compile(r"^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?([/?#]|$)", re.IGNORECASE)
 
@@ -149,6 +171,7 @@ def open_page(url: str) -> dict[str, Any]:
     shown = browser_overlay.navigate(pid, address)
     if shown.get("ok") is False:
         return {"ok": False, "error": str(shown.get("error") or "the page didn't open")}
+    _FRESH_PANES.add(pid)
     return {"ok": True, "url": browser_overlay.normalize_url(address), "pane_id": pid}
 
 
@@ -412,6 +435,10 @@ def capture_page(pane_id: str = "", conv_id: str = "") -> dict[str, Any]:
     pid, why = _sandbox_page(pane_id, conv_id)
     if why:
         return {"ok": False, "error": why}
+    top = pid in _FRESH_PANES
+    _FRESH_PANES.discard(pid)
+    if hasattr(browser_overlay, "evaluate"):
+        browser_overlay.evaluate(pid, _SETTLE_JS % int(top), timeout_s=15.0)  # best effort: capture anyway
     got = browser_overlay.devtools(pid, "Page.captureScreenshot", {"format": "png"}, timeout_s=30.0)
     data = str((got.get("reply") or {}).get("data") or "")
     if not got.get("ok") or not data:
