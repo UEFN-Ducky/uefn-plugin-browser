@@ -101,7 +101,7 @@ def test_agents_open_switch_and_close_page_tabs(monkeypatch) -> None:
         pid if any(p["pane_id"] == pid for p in panes) else ("" if pid else panes[0]["pane_id"]))
     overlay.normalize_url = lambda u: u
     overlay.is_app_ui_url = lambda u: False
-    monkeypatch.setattr(plugin, "_bring_tab_forward", lambda: (f"{app}::t1", ""))
+    monkeypatch.setattr(plugin, "_browser_tab", lambda front=False: (f"{app}::t1", ""))
 
     out = plugin.new_tab("https://linkedin.com/feed")
     assert out["ok"] and out["pane_id"].startswith(f"{app}::a") and sent[-1][1] == "new"

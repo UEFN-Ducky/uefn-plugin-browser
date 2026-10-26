@@ -28,7 +28,7 @@ You drive the **in-app browser** through the **browser** Store plugin (`browser_
 
 | Tool | Use |
 |------|-----|
-| `browser_open` | **Show the user a page**: opens the Browser tab if needed and brings it to the front |
+| `browser_open` | **Show the user a page**: opens it in the Browser tab behind the tab they are on (never pulled to the front); the chat card shows the page and an Open button |
 | `browser_status` | List open panes + CDP summary |
 | `browser_navigate` | Go to a URL in a pane (`pane_id` optional) without bringing the tab forward |
 | `browser_command` | `back` / `forward` / `reload` / `stop` |
@@ -43,14 +43,14 @@ You drive the **in-app browser** through the **browser** Store plugin (`browser_
 
 Addresses: `https://…`, `http://…`, or a dev server on this PC as `localhost:<port>/path` (http is added). Ducky's own window (`localhost:5173`, `127.0.0.1:4199`) is refused.
 
-Typical flow: `browser_open` with the page → `browser_command` `reload` after you change what it serves (dev servers with live reload update by themselves).
+Typical flow: `browser_open` with the page → `browser_command` `reload` after you change what it serves (dev servers with live reload update by themselves). Never ask the person to look at the Browser tab mid-task: the chat card shows it, and they press Open when they want the tab.
 
 ## Frames from a video
 
 `web_video(url)` (UEFN Ducky) reads a YouTube video's transcript and downloads frames from
 about its first minute without a browser. For later moments it says so and hands you this
 call: `browser_video_frames(url, frames=[75, "1:30"])` (or `overview=12`, evenly spaced with a
-contact sheet). It plays the video in the Browser tab (brought to the front, muted), seeks to
+contact sheet). It plays the video in the Browser tab (behind the person's tab, muted), seeks to
 each time and saves the player's own frame, up to 1280 px, as a JPEG in this chat. Open each
 returned path with `view_image`. Needs UEFN Ducky 1.2.426 or newer. A cookie question from
 YouTube in the tab is the person's to answer.
