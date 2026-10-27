@@ -1,14 +1,54 @@
 {
   "id": "browser",
   "kind": "plugin",
-  "version": "1.0.36",
+  "version": "1.0.37",
   "label": "Web Browser",
-  "description": "Real Chromium browser tab inside UEFN Ducky \u2014 docs, dashboards, search, local dev servers, and AI-driven navigation via browser_* MCP tools. Workflows show a page with the Open in Ducky browser node. Agents take frames from any moment of a YouTube video with browser_video_frames. CDP/remote debugging is off by default so Cloudflare checks work; opt in only for chrome-devtools-mcp.",
+  "description": "Real Chromium browser tab inside UEFN Ducky \u2014 docs, dashboards, search, local dev servers, and AI-driven navigation via browser_* MCP tools. Workflows show a page with the Open in Ducky browser node. Agents take frames from any moment of a YouTube video with browser_video_frames. CDP/remote debugging is off by default so Cloudflare checks work; opt in only for chrome-devtools-mcp. Agents can also use your own Google Chrome (chrome_* tools, Chrome DevTools MCP bundled): only when you allow it in the chat, with a warning that it is your real Chrome.",
   "min_app_version": "1.2.357",
   "default_enabled": true,
   "secret_keys": [],
   "data_sharing": false,
   "contributes": {
+    "settings.tabs": [
+      {
+        "id": "Browser",
+        "label": "Browser",
+        "icon": "assets/icon.svg",
+        "ui": "sections"
+      }
+    ],
+    "settings.sections": [
+      {
+        "tab": "Browser",
+        "id": "own_chrome",
+        "title": "Your own Chrome",
+        "description": "Agents normally use Ducky's Browser tab. With this on, an agent you ask can also use your own Google Chrome: your real tabs and the accounts you're signed in to. Chrome needs remote debugging turned on once at chrome://inspect/#remote-debugging, and asks you to Allow each new connection.",
+        "order": 10,
+        "properties": [
+          {
+            "id": "ownChrome",
+            "type": "boolean",
+            "label": "Let agents use my Chrome",
+            "default": true,
+            "description": "Off = agents only ever use Ducky's Browser tab."
+          },
+          {
+            "id": "ownChromeAsk",
+            "type": "boolean",
+            "label": "Ask me in each chat first",
+            "default": true,
+            "description": "The first time a chat wants your Chrome, it asks you there and says it is your real Chrome. Off = chats use it without asking (Chrome still asks you to Allow the connection)."
+          },
+          {
+            "id": "ownChromeUrl",
+            "type": "string",
+            "label": "Debugging address (advanced)",
+            "placeholder": "http://127.0.0.1:9222",
+            "description": "Leave empty to use the Chrome you have open. Only for a Chrome you started with --remote-debugging-port."
+          }
+        ]
+      }
+    ],
     "ui.panels": [
       {
         "id": "browser",
@@ -36,6 +76,8 @@
       "intent_pattern": "\\b(browser|chrome|devtools|cdp)\\b",
       "plan_tools": [
         "browser_status",
+        "chrome_status",
+        "chrome_list_tools",
         "browser_cdp_info",
         "browser_runtime_info",
         "browser_site_security"

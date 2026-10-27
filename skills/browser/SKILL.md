@@ -110,6 +110,24 @@ Use the **EBWebView** profile from `browser_cdp_info` — **not** the system Chr
 
 4. Open the Browser tab and navigate to the target page before using CDP tools.
 
+## The person's own Google Chrome (`chrome_*`)
+
+Only when they ask for **their** Chrome ("in my Chrome", "my real browser"); otherwise use the
+Browser tab above. It is their real Chrome: open tabs, signed-in accounts, saved data.
+
+| Tool | Use |
+|------|-----|
+| `chrome_status` | Ready or not, their Settings (on, asks each chat) and the setup steps |
+| `chrome_list_tools` | The Chrome DevTools tools with schemas; call before `chrome_call` |
+| `chrome_call(tool, arguments)` | Run one: `list_pages` / `new_page` → `take_snapshot {"pageId": n}` (uids) → `click` / `fill` / `navigate_page` with that `pageId`; `take_screenshot` returns the picture |
+| `chrome_reconnect` | After they turned on remote debugging, restarted Chrome or changed Settings |
+
+- The first `chrome_call` in a chat asks them in the chat (unless they chose Always allow). No → stop, use the Browser tab.
+- Chrome needs remote debugging on once (`chrome://inspect/#remote-debugging`) and asks them to Allow each connection; an error with `hint` gives those steps: tell them, then `chrome_reconnect`.
+- Every result says it ran in their own Chrome. Ask before you post, send, buy, delete or change a setting.
+- Settings → Browser → **Your own Chrome**: turn it off, stop the per-chat question, or set a debugging address.
+- Chrome DevTools MCP 1.12.0 is bundled (`vendor/`); nothing is fetched at runtime, and no usage statistics are sent.
+
 ## Do not
 
 - Navigate to `127.0.0.1` / `localhost` panel URLs or `/plugin-ui/` paths in the browser pane.
