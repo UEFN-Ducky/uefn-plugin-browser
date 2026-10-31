@@ -614,6 +614,15 @@ _POINT_JS = r"""(() => {
   return {ok: true, x: r.left + r.width / 2, y: r.top + r.height / 2, secret};
 })()"""
 
+# Focuses one marked box and gives back what it holds, so typing can be checked.
+_FIELD_JS = r"""(() => {
+  const el = document.querySelector('[data-ducky-ref="%s"]');
+  if (!el) return {ok: false};
+  if (document.activeElement !== el && !el.contains(document.activeElement)) el.focus();
+  const value = 'value' in el ? el.value : el.innerText;
+  return {ok: true, value: String(value == null ? '' : value).slice(0, 20000)};
+})()"""
+
 _REF = re.compile(r"^e\d{1,4}$")
 
 # browser_press names -> (DevTools key, Windows virtual key, text it types).
@@ -711,17 +720,47 @@ def click_page(ref: str, pane_id: str = "", conv_id: str = "", max_chars: int = 
     return {"ok": False, "error": why} if why else _after(pid, conv_id, f"clicked {ref}", max_chars)
 
 
+def _field(pid: str, ref: str) -> str | None:
+    """What the looked-at box *ref* holds (focusing it first); None when it is gone."""
+    from frontend.ui_web import browser_overlay
+
+    got = browser_overlay.evaluate(pid, _FIELD_JS % ref, timeout_s=10.0)
+    value = got.get("value") if got.get("ok") and isinstance(got.get("value"), dict) else {}
+    return str(value.get("value") or "") if value.get("ok") else None
+
+
+def _squash(text: str) -> str:
+    return "".join(str(text).split())
+
+
 def type_page(ref: str, text: str, submit: bool = False, clear: bool = False, pane_id: str = "",
               conv_id: str = "", max_chars: int = 8000) -> dict[str, Any]:
     pid, why = _agent_page(pane_id, conv_id)
-    why = why or _click_ref(pid, ref, typing=True)
-    if not why and clear:
-        select_all = {"key": "a", "code": "KeyA", "windowsVirtualKeyCode": 65, "modifiers": 2}
-        why = _input(pid, "Input.dispatchKeyEvent", {"type": "rawKeyDown", "commands": ["selectAll"], **select_all}) \
-            or _input(pid, "Input.dispatchKeyEvent", {"type": "keyUp", **select_all})
-    why = why or _input(pid, "Input.insertText", {"text": str(text)})
-    if not why and submit:
-        why = _press(pid, "Enter")
+    if why:
+        return {"ok": False, "error": why}
+    why = _click_ref(pid, ref, typing=True)
+    if why:
+        return {"ok": False, "error": why}
+    # A tab behind Ducky's own page has no focus: the click focused nothing and the text
+    # went nowhere, while this still said "typed" (Oct 31 2026). The page acts focused
+    # while it is typed into, the box is focused, and checked afterwards.
+    focus = not _input(pid, "Emulation.setFocusEmulationEnabled", {"enabled": True})
+    try:
+        if _field(pid, ref) is None:
+            why = f"{ref} isn't on the page any more. browser_look again."
+        if not why and clear:
+            select_all = {"key": "a", "code": "KeyA", "windowsVirtualKeyCode": 65, "modifiers": 2}
+            why = _input(pid, "Input.dispatchKeyEvent", {"type": "rawKeyDown", "commands": ["selectAll"], **select_all}) \
+                or _input(pid, "Input.dispatchKeyEvent", {"type": "keyUp", **select_all})
+        why = why or _input(pid, "Input.insertText", {"text": str(text)})
+        if not why and _squash(text) and _squash(text) not in _squash(_field(pid, ref) or ""):
+            why = (f"The text didn't reach {ref}: the box doesn't show it. Ask the person to bring the "
+                   "Browser tab to the front, then browser_look and try again.")
+        if not why and submit:
+            why = _press(pid, "Enter")
+    finally:
+        if focus:
+            _input(pid, "Emulation.setFocusEmulationEnabled", {"enabled": False})
     return {"ok": False, "error": why} if why else _after(pid, conv_id, f"typed into {ref}", max_chars)
 
 
