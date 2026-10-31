@@ -530,7 +530,8 @@ function closeTab(id) {
     activeTab = "";
     const next = tabs[i] || tabs[i - 1];
     if (next) activateTab(next.id);
-    else openTab(homepage);
+    // Last page closed: shell.boot (ui/boot.js) closes the Browser editor tab.
+    else parent.postMessage({ channel: "browser-plugin-boot", type: "close-editor-tab" }, "*");
   }
   renderTabs();
 }

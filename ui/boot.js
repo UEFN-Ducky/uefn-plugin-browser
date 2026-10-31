@@ -670,10 +670,29 @@
     openSettings();
   }
 
+  /** The Browser panel closed its last page: close its editor tab. */
+  function onPanelMessage(e) {
+    var d = e.data;
+    if (!d || d.channel !== "browser-plugin-boot" || d.type !== "close-editor-tab") return;
+    var frames = document.querySelectorAll("iframe");
+    var ours = false;
+    for (var i = 0; i < frames.length; i++) {
+      if (frames[i].contentWindow === e.source) {
+        ours = (frames[i].getAttribute("src") || "").indexOf("/" + PLUGIN_ID + "/ui/index.html") >= 0;
+        break;
+      }
+    }
+    if (!ours) return;
+    // ponytail: one Browser editor tab by design; closes the first match.
+    var btn = document.querySelector('[data-tab-id^="' + TAB_PREFIX + '"] .editor-tab-close-btn');
+    if (btn) btn.click();
+  }
+
   function attach() {
     document.addEventListener("click", onTriggerClick, true);
     document.addEventListener("keydown", onKey, true);
     window.addEventListener("ducky:browser-settings", onOpenSettingsEvent);
+    window.addEventListener("message", onPanelMessage);
     wrapPanelPush();
   }
 
@@ -682,6 +701,7 @@
     document.removeEventListener("click", onTriggerClick, true);
     document.removeEventListener("keydown", onKey, true);
     window.removeEventListener("ducky:browser-settings", onOpenSettingsEvent);
+    window.removeEventListener("message", onPanelMessage);
     var css = document.getElementById("browser-plugin-boot-css");
     if (css) css.remove();
   }
