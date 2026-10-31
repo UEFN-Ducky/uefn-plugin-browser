@@ -12,6 +12,7 @@ PAGE = Path(__file__).resolve().parents[1] / "ui" / "index.html"
 FAKE_HOST = r"""
 window.__calls = [];
 window.parent = { postMessage(msg) {
+  if (msg && msg.channel === "browser-plugin-boot") window.__calls.push({ method: msg.type, params: {} });
   if (!msg || !msg.method) return;
   window.__calls.push({ method: msg.method, params: msg.params });
   const p = msg.params || {};
@@ -80,8 +81,9 @@ def test_page_tabs_open_switch_close_and_follow_agents() -> None:
                       " data: ''}}, '*')")
         page.wait_for_function("!document.getElementById('snap').classList.contains('is-on')")
 
-        # Closing the last tab leaves a fresh one, never an empty Browser.
+        # Closing the last tab asks shell.boot to close the Browser editor tab.
         for _ in range(3):
             page.click(".ptab.is-active .ptab-close")
-        page.wait_for_function("document.querySelectorAll('.ptab').length === 1")
+        page.wait_for_function("document.querySelectorAll('.ptab').length === 0")
+        assert [c for c in page.evaluate("window.__calls") if c["method"] == "close-editor-tab"]
         browser.close()
