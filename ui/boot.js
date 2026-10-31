@@ -1,5 +1,5 @@
 /**
- * Browser plugin shell.boot — header dropdown: Open browser / Settings.
+ * Browser plugin shell.boot — header button opens the Browser tab; Settings popup (toolbar gear).
  * One Browser editor tab; its page tabs live inside it (ui/index.html tab strip).
  */
 (function () {
@@ -11,18 +11,13 @@
   var HOMEPAGE_DEFAULT = "https://uefnducky.org";
   var HOMEPAGE_LEGACY = "https://duckduckgo.com";
   var HISTORY_MAX = 200;
-  var MENU_WIDTH = 280;
-  var MENU_GAP = 6;
 
   var host = window.__duckyPluginHost && window.__duckyPluginHost.forPlugin
     ? window.__duckyPluginHost.forPlugin(PLUGIN_ID)
     : null;
 
   var paneState = {};
-  var menuEl = null;
   var settingsEl = null;
-  var triggerBtn = null;
-  var open = false;
   var searchChoice = null;
   var searchEngineValue = "duckduckgo";
 
@@ -96,8 +91,6 @@
 
   /** Show the Browser tab, opening it when it isn't open. New pages are tabs inside it. */
   function openBrowser() {
-    // Close the dropdown first — never stack menu DOM work on a WebView2 boot.
-    hideMenu();
     var ids = listTabIds();
     if (ids.length) {
       activateTab(ids[0]);
@@ -107,12 +100,15 @@
       window.__duckyOpenPluginUiTab(PLUGIN_ID, PANEL_ID);
       return;
     }
-    // Pre-helper hosts: temporarily unhook our capture click and fire the button.
+    // Pre-helper hosts: let the button's own panel action run once.
     var btn = findTrigger();
     if (btn) {
-      btn.removeEventListener("click", onTriggerClick, true);
-      btn.click();
-      btn.addEventListener("click", onTriggerClick, true);
+      passThrough = true;
+      try {
+        btn.click();
+      } finally {
+        passThrough = false;
+      }
     }
   }
 
@@ -143,75 +139,20 @@
     window.__uefnPanelPush = fan;
   }
 
-  function hideMenu() {
-    open = false;
-    if (menuEl && menuEl.parentNode) menuEl.parentNode.removeChild(menuEl);
-    menuEl = null;
-    if (triggerBtn) triggerBtn.classList.remove("is-active");
-  }
-
-  function menuPosition(trigger) {
-    var rect = trigger.getBoundingClientRect();
-    var left = rect.right - MENU_WIDTH;
-    if (left < 8) left = 8;
-    if (left + MENU_WIDTH > window.innerWidth - 8) {
-      left = Math.max(8, window.innerWidth - MENU_WIDTH - 8);
-    }
-    return { top: rect.bottom + MENU_GAP, left: left };
-  }
-
-  function showMenu(trigger) {
-    hideMenu();
-    wrapPanelPush();
-    open = true;
-    triggerBtn = trigger;
-    trigger.classList.add("is-active");
-    var pos = menuPosition(trigger);
-    menuEl = document.createElement("div");
-    menuEl.className = "terminal-header-menu terminal-header-menu--portaled no-drag browser-header-menu";
-    menuEl.style.top = pos.top + "px";
-    menuEl.style.left = pos.left + "px";
-    menuEl.innerHTML =
-      '<button type="button" class="terminal-header-new-btn browser-header-open-btn">' +
-      '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">' +
-      '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 010 18M12 3a14 14 0 000 18"/></svg>' +
-      "<span>Open browser</span></button>" +
-      '<button type="button" class="terminal-header-new-btn browser-header-settings-btn">' +
-      '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">' +
-      '<circle cx="12" cy="12" r="3"/><path d="M12 1v2M12 21v2M4.2 4.2l1.4 1.4M18.4 18.4l1.4 1.4M1 12h2M21 12h2M4.2 19.8l1.4-1.4M18.4 5.6l1.4-1.4"/>' +
-      "</svg><span>Settings</span></button>";
-    document.body.appendChild(menuEl);
-    menuEl.querySelector(".browser-header-open-btn").addEventListener("click", openBrowser);
-    menuEl.querySelector(".browser-header-settings-btn").addEventListener("click", function () {
-      hideMenu();
-      openSettings();
-    });
-  }
-
+  // ponytail: header button opens the Browser tab directly; Settings is the gear in the toolbar.
+  var passThrough = false;
   function onTriggerClick(e) {
-    var btn = isBrowserHeaderBtn(e.target);
-    if (!btn) return;
+    if (passThrough || !isBrowserHeaderBtn(e.target)) return;
     e.preventDefault();
     e.stopPropagation();
     e.stopImmediatePropagation();
-    if (open) hideMenu();
-    else showMenu(btn);
-  }
-
-  function onDocDown(e) {
-    if (!open) return;
-    if (menuEl && menuEl.contains(e.target)) return;
-    if (triggerBtn && triggerBtn.contains(e.target)) return;
-    hideMenu();
+    wrapPanelPush();
+    openBrowser();
   }
 
   function onKey(e) {
     if (e.key !== "Escape") return;
-    if (settingsEl || document.querySelector(".browser-settings-overlay")) {
-      forceCloseSettings();
-      return;
-    }
-    hideMenu();
+    if (settingsEl || document.querySelector(".browser-settings-overlay")) forceCloseSettings();
   }
 
   /* ── Settings popup ───────────────────────────────────────────────── */
@@ -237,7 +178,6 @@
 
   function openSettings() {
     if (settingsEl) closeSettings();
-    hideMenu();
     setBrowserCover(true);
     try {
       _openSettingsBody();
@@ -672,7 +612,6 @@
     var style = document.createElement("style");
     style.id = "browser-plugin-boot-css";
     style.textContent =
-      ".browser-header-menu .browser-header-settings-btn{border-top:1px solid var(--border-subtle);}" +
       ".browser-header-badge{pointer-events:none;}" +
       ".browser-settings-overlay{position:fixed;inset:0;z-index:200000;background:rgba(0,0,0,.62);" +
       "display:flex;align-items:center;justify-content:center;padding:24px;}" +
@@ -733,17 +672,14 @@
 
   function attach() {
     document.addEventListener("click", onTriggerClick, true);
-    document.addEventListener("mousedown", onDocDown, true);
     document.addEventListener("keydown", onKey, true);
     window.addEventListener("ducky:browser-settings", onOpenSettingsEvent);
     wrapPanelPush();
   }
 
   function cleanup() {
-    hideMenu();
     closeSettings(); // also unmounts ChoiceDropdown + lifts UI cover
     document.removeEventListener("click", onTriggerClick, true);
-    document.removeEventListener("mousedown", onDocDown, true);
     document.removeEventListener("keydown", onKey, true);
     window.removeEventListener("ducky:browser-settings", onOpenSettingsEvent);
     var css = document.getElementById("browser-plugin-boot-css");
