@@ -518,8 +518,9 @@ def _agent_page(pane_id: str, conv_id: str) -> tuple[str, str]:
     return pid, ""
 
 
-def capture_page(pane_id: str = "", conv_id: str = "") -> dict[str, Any]:
-    """A picture of the sandbox page in the Browser tab, saved in chat ``conv_id``."""
+def capture_page(pane_id: str = "", conv_id: str = "", width: int = 0, height: int = 0) -> dict[str, Any]:
+    """A picture of the sandbox page in the Browser tab, saved in chat ``conv_id``. *width* (and
+    *height*) show the page at that size first, e.g. 375 for a phone, then put it back."""
     import base64
 
     from frontend.ui_web import browser_overlay
@@ -531,9 +532,22 @@ def capture_page(pane_id: str = "", conv_id: str = "") -> dict[str, Any]:
         return {"ok": False, "error": why}
     top = pid in _FRESH_PANES
     _FRESH_PANES.discard(pid)
-    if hasattr(browser_overlay, "evaluate"):
-        browser_overlay.evaluate(pid, _SETTLE_JS % int(top), timeout_s=15.0)  # best effort: capture anyway
-    got = browser_overlay.devtools(pid, "Page.captureScreenshot", {"format": "png"}, timeout_s=30.0)
+    # A phone-width picture: Oct 31 2026 an agent ran headless Edge for one instead, and the
+    # command never returned.
+    sized = int(width) > 0
+    if sized:
+        w, h = max(240, min(int(width), 3840)), max(240, min(int(height) or 900, 4000))
+        why = _input(pid, "Emulation.setDeviceMetricsOverride",
+                     {"width": w, "height": h, "deviceScaleFactor": 1, "mobile": w < 768})
+        if why:
+            return {"ok": False, "error": why}
+    try:
+        if hasattr(browser_overlay, "evaluate"):
+            browser_overlay.evaluate(pid, _SETTLE_JS % int(top or sized), timeout_s=15.0)  # best effort: capture anyway
+        got = browser_overlay.devtools(pid, "Page.captureScreenshot", {"format": "png"}, timeout_s=30.0)
+    finally:
+        if sized:
+            _input(pid, "Emulation.clearDeviceMetricsOverride", {})
     data = str((got.get("reply") or {}).get("data") or "")
     if not got.get("ok") or not data:
         return {"ok": False, "error": str(got.get("error") or "The page didn't give a picture.")}
@@ -543,7 +557,8 @@ def capture_page(pane_id: str = "", conv_id: str = "") -> dict[str, Any]:
     if not saved.get("ok"):
         return {"ok": False, "error": str(saved.get("error") or "The picture was not saved.")}
     url = str(browser_overlay.get_state(pid).get("url") or "")
-    return {"ok": True, "url": url, "path": saved.get("path"), "media_url": saved.get("media_url"),
+    return {"ok": True, "url": url, **({"size": [w, h]} if sized else {}), "path": saved.get("path"),
+            "media_url": saved.get("media_url"),
             "chat_view": _card(pid, [str(saved.get("path") or "")]), "next": "Open it with view_image(path)."}
 
 
@@ -967,11 +982,13 @@ def register(api) -> None:
         return _dumps(_asking_first(_video_frames_tool, url, frames=frames, overview=overview))
 
     @api.tool(name="browser_capture", intent=SANDBOX_INTENT)
-    def browser_capture(pane_id: str = "") -> Any:
+    def browser_capture(pane_id: str = "", width: int = 0, height: int = 0) -> Any:
         """A picture of the page in the Browser tab, saved in this chat (view_image opens it).
-        Works on a page this chat's sandbox serves (localhost:<its port>) and on sites the person
-        let agents use (the first time on a site, it asks them in the chat)."""
-        out = _site_work("capture_page", pane_id=pane_id)
+        width/height show the page at that size first: width=375 is a phone (check a page's
+        phone layout this way, not with a headless browser). Works on a page this chat's sandbox
+        serves (localhost:<its port>) and on sites the person let agents use (the first time on
+        a site, it asks them in the chat)."""
+        out = _site_work("capture_page", pane_id=pane_id, width=width, height=height)
         path = str(out.get("path") or "")
         if path:
             try:

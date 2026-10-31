@@ -28,7 +28,7 @@ You drive the **in-app browser** through the **browser** Store plugin (`browser_
 
 | Tool | Use |
 |------|-----|
-| `browser_open` | **Show the user a page**: opens it in the Browser tab behind the tab they are on (never pulled to the front); the chat card shows the page and an Open button |
+| `browser_open` | **Show the user a page**: opens the Browser tab beside their chat, in a column on the right (a second agent page stacks under it; narrow windows and older apps: behind the tab they are on). It never takes their focus; the chat card shows the page and an Open button |
 | `browser_status` | List open panes + CDP summary |
 | `browser_navigate` | Go to a URL in a pane (`pane_id` optional) without bringing the tab forward |
 | `browser_command` | `back` / `forward` / `reload` / `stop` |
@@ -38,7 +38,7 @@ You drive the **in-app browser** through the **browser** Store plugin (`browser_
 | `browser_new_tab` / `browser_switch_tab` / `browser_close_tab` | Open (returns its `pane_id`), show or close a page tab; every `browser_*` tool takes `pane_id`, default the tab on screen |
 | `browser_look` | Page text + what is clickable on screen, each with a ref (`e1`, `e2`…) |
 | `browser_click` / `browser_type` / `browser_press` | Click a ref, type into a ref (`clear`, `submit`), press a key or `ScrollDown`; each returns the page after |
-| `browser_capture` / `browser_read` | A picture / all text of the page |
+| `browser_capture` / `browser_read` | A picture / all text of the page; `browser_capture(width=375)` pictures the phone layout |
 | `browser_agent_sites` | Sites the person allowed; `remove="x.com"` or `"all"` takes one back |
 
 Addresses: `https://…`, `http://…`, or a dev server on this PC as `localhost:<port>/path` (http is added). Ducky's own window (`localhost:5173`, `127.0.0.1:4199`) is refused.
@@ -60,7 +60,15 @@ YouTube in the tab is the person's to answer.
 A program an agent started with `sandbox_launch` (a dev server, a web UI) is shown with
 `browser_open("localhost:<port>")`. Then `browser_capture()` saves a picture of the page in the
 chat (open it with `view_image`) and `browser_read()` returns its text, to check what the app
-really shows. Both refuse any page that isn't served on one of this chat's sandbox ports, so a
+really shows. Check it the way a person uses it:
+
+- Phone layout: `browser_capture(width=375)`, never a headless browser from `sandbox_run`.
+- A form: `browser_look` → `browser_type` each field → `browser_click` the button → `browser_look`
+  (or `browser_capture`) shows the result. Also submit it empty once to see its error messages.
+  `browser_type` reads the box back: when it says the text didn't arrive, ask the person to bring
+  the Browser tab forward, then try once more.
+- These are Browser plugin tools: from a coding agent, run them with
+  `ducky_call_tool("browser_open", {"url": "localhost:<port>"})`. Both refuse any page that isn't served on one of this chat's sandbox ports, so a
 site the person is signed in to is never captured or read without their OK (below).
 
 ## Using a site as the person (X, Gmail, …)

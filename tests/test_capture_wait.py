@@ -69,3 +69,34 @@ def test_capture_settles_first_and_resets_scroll_once_after_open(monkeypatch) ->
     kinds = [c[0] for c in calls]
     assert kinds == ["evaluate", "shot", "evaluate", "shot"]  # settle before every picture
     assert "TOP = 1," in calls[0][2] and "TOP = 0," in calls[2][2]  # top only after a new open
+
+
+def test_a_phone_width_picture_resizes_the_page_and_puts_it_back(monkeypatch) -> None:
+    # Oct 31 2026: an agent ran headless Edge for a phone-width picture and the command hung.
+    calls: list[tuple] = []
+    overlay = types.SimpleNamespace(
+        evaluate=lambda pid, js, timeout_s: calls.append(("settle",)) or {"ok": True},
+        devtools=lambda pid, method, params, timeout_s=0: calls.append((method, dict(params))) or {
+            "ok": True, "reply": {"data": "aGk="}},
+        get_state=lambda pid: {"url": "http://localhost:5199/"},
+    )
+    captures = types.SimpleNamespace(save_capture_for_agents=lambda data, prefix, conv_id: {"ok": True, "path": "p.png"})
+    ui_web = types.ModuleType("frontend.ui_web")
+    ui_web.browser_overlay = overlay
+    ui_web.tool_captures = captures
+    monkeypatch.setitem(sys.modules, "frontend", types.ModuleType("frontend"))
+    monkeypatch.setitem(sys.modules, "frontend.ui_web", ui_web)
+    monkeypatch.setitem(sys.modules, "frontend.ui_web.browser_overlay", overlay)
+    monkeypatch.setitem(sys.modules, "frontend.ui_web.tool_captures", captures)
+    monkeypatch.setattr(plugin, "_agent_page", lambda pane_id, conv_id: ("pane1", ""))
+
+    out = plugin.capture_page(conv_id="c", width=375)
+    assert out["ok"] is True and out["size"] == [375, 900]
+    methods = [c[0] for c in calls]
+    assert methods == ["Emulation.setDeviceMetricsOverride", "settle", "Page.captureScreenshot",
+                       "Emulation.clearDeviceMetricsOverride"]
+    assert calls[0][1] == {"width": 375, "height": 900, "deviceScaleFactor": 1, "mobile": True}
+
+    calls.clear()
+    assert "size" not in plugin.capture_page(conv_id="c")
+    assert [c[0] for c in calls] == ["settle", "Page.captureScreenshot"]
