@@ -65,8 +65,10 @@ really shows. Check it the way a person uses it:
 - Phone layout: `browser_capture(width=375)`, never a headless browser from `sandbox_run`.
 - A form: `browser_look` → `browser_type` each field → `browser_click` the button → `browser_look`
   (or `browser_capture`) shows the result. Also submit it empty once to see its error messages.
-  `browser_type` reads the box back: when it says the text didn't arrive, ask the person to bring
-  the Browser tab forward, then try once more.
+  `browser_type` fills every kind of field: a dropdown takes the option's label, a date box
+  `2026-11-04`, a checkbox `true`. It reads the box back: when it says the text didn't arrive,
+  ask the person to bring the Browser tab forward, then try once more. Test the real page this
+  way, not a jsdom copy.
 - These are Browser plugin tools: from a coding agent, run them with
   `ducky_call_tool("browser_open", {"url": "localhost:<port>"})`. Both refuse any page that isn't served on one of this chat's sandbox ports, so a
 site the person is signed in to is never captured or read without their OK (below).

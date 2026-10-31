@@ -22,6 +22,8 @@ def _page(monkeypatch, *, emulation_works: bool) -> dict:
     def evaluate(pid, js, timeout_s=0):
         if "getBoundingClientRect" in js:
             return {"ok": True, "value": {"ok": True, "x": 10, "y": 10, "secret": False}}
+        if "disabled:" in js:
+            return {"ok": True, "value": {"ok": True, "tag": "input", "type": "text", "checked": False, "disabled": False}}
         if "activeElement" in js:
             return {"ok": True, "value": {"ok": True, "value": page["value"]}}
         return {"ok": True, "value": {}}

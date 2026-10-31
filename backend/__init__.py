@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import re
 import time
@@ -619,15 +620,90 @@ _LOOK_JS = r"""(() => {
           text: (document.body ? document.body.innerText : '').slice(0, MAX), elements};
 })()"""
 
-# Scrolls one marked element into view and gives its centre in viewport CSS px.
-_POINT_JS = r"""(() => {
+# Scrolls one marked element into view and gives its centre in viewport CSS px, once it stops
+# moving. Oct 31 2026: on pages with `scroll-behavior: smooth` the centre was read before the
+# scroll ran, so the click landed where the button had been and its form never submitted.
+# covered: a fixed or sticky thing (a cookie banner, a header) a click there would hit instead.
+_POINT_JS = r"""(async () => {
   const el = document.querySelector('[data-ducky-ref="%s"]');
   if (!el) return {ok: false};
-  el.scrollIntoView({block: 'center', inline: 'center'});
-  const r = el.getBoundingClientRect();
+  el.scrollIntoView({block: 'center', inline: 'center', behavior: 'instant'});
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  let r = el.getBoundingClientRect();
+  for (const end = Date.now() + 2000; Date.now() < end;) {
+    await sleep(60);
+    const now = el.getBoundingClientRect();
+    if (now.top === r.top && now.left === r.left) break;
+    r = now;
+  }
+  const x = r.left + r.width / 2, y = r.top + r.height / 2;
+  let covered = '';
+  const hit = document.elementFromPoint(x, y);
+  const mine = (n) => n === el || el.contains(n) || [...(el.labels || [])].some((l) => l.contains(n));
+  if (hit && !mine(hit)) {
+    for (let n = hit; n && n !== document.body; n = n.parentElement) {
+      if (n.contains(el)) break;
+      if (/fixed|sticky/.test(getComputedStyle(n).position)) {
+        covered = (n.getAttribute('aria-label') || n.innerText || n.tagName).trim().replace(/\s+/g, ' ').slice(0, 60);
+        break;
+      }
+    }
+  }
   const secret = el.type === 'password' || /one-time-code|password/.test(el.autocomplete || '');
-  return {ok: true, x: r.left + r.width / 2, y: r.top + r.height / 2, secret};
+  return {ok: true, x, y, secret, covered};
 })()"""
+
+# What kind of box a marked element is, so browser_type fills it the way it takes input.
+_KIND_JS = r"""(() => {
+  const el = document.querySelector('[data-ducky-ref="%s"]');
+  if (!el) return {ok: false};
+  const tag = el.tagName.toLowerCase();
+  const secret = el.type === 'password' || /one-time-code|password/.test(el.autocomplete || '');
+  return {ok: true, tag, type: tag === 'input' ? String(el.type || 'text').toLowerCase() : '',
+          checked: !!el.checked, disabled: !!el.disabled, secret};
+})()"""
+
+# Picks a dropdown option by its value or its label (exact, then starting with, then containing).
+_CHOOSE_JS = r"""((ref, want) => {
+  const el = document.querySelector(`[data-ducky-ref="${ref}"]`);
+  if (!el) return {ok: false};
+  const norm = (s) => String(s).trim().replace(/\s+/g, ' ').toLowerCase();
+  const opts = [...el.options].filter((o) => !o.disabled), w = norm(want);
+  const pick = opts.find((o) => o.value === want) || opts.find((o) => norm(o.label) === w) ||
+    opts.find((o) => norm(o.value) === w) || opts.find((o) => w && norm(o.label).startsWith(w)) ||
+    opts.find((o) => w && norm(o.label).includes(w));
+  if (!pick) return {ok: true, found: false, options: opts.map((o) => o.label.trim()).slice(0, 30)};
+  el.focus();
+  // The prototype's setter, so a page that tracks the value itself (React) sees the change.
+  Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set.call(el, pick.value);
+  el.dispatchEvent(new Event('input', {bubbles: true}));
+  el.dispatchEvent(new Event('change', {bubbles: true}));
+  return {ok: true, found: true, label: pick.label.trim(), value: el.value};
+})(%s, %s)"""
+
+# Sets a date, time, colour or range box, which typed text never fills (Chromium edits them in parts).
+_SET_VALUE_JS = r"""((ref, want) => {
+  const el = document.querySelector(`[data-ducky-ref="${ref}"]`);
+  if (!el) return {ok: false};
+  el.focus();
+  Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, want);
+  const took = el.value !== '' || want === '';
+  if (took) {
+    el.dispatchEvent(new Event('input', {bubbles: true}));
+    el.dispatchEvent(new Event('change', {bubbles: true}));
+  }
+  return {ok: true, took, value: el.value};
+})(%s, %s)"""
+
+# The value format of each box _SET_VALUE_JS fills, for when the text isn't one.
+_VALUE_BOXES = {
+    "date": "a date as YYYY-MM-DD, e.g. 2026-11-04", "time": "a time as HH:MM, e.g. 14:30",
+    "datetime-local": "a date and time as YYYY-MM-DDTHH:MM, e.g. 2026-11-04T14:30",
+    "month": "a month as YYYY-MM, e.g. 2026-11", "week": "a week as YYYY-W##, e.g. 2026-W45",
+    "color": "a colour as #rrggbb, e.g. #e0892b", "range": "a number in the slider's range",
+}
+_YES = {"true", "yes", "on", "1", "check", "checked", "tick", "x"}
+_NO = {"false", "no", "off", "0", "uncheck", "unchecked", "untick", ""}
 
 # Focuses one marked box and gives back what it holds, so typing can be checked.
 _FIELD_JS = r"""(() => {
@@ -683,7 +759,9 @@ def _click_ref(pid: str, ref: str, typing: bool = False) -> str:
         return f"{ref} isn't on the page any more. browser_look again."
     if typing and point.get("secret"):
         return f"{ref} is a password or sign-in code box: the person types that themselves."
-    time.sleep(0.2)  # let a smooth scroll land
+    if point.get("covered"):
+        return (f"{ref} is under {point['covered']!r} on screen, which would get the click instead. "
+                "Close it or scroll past it (browser_look), then try again.")
     x, y = float(point["x"]), float(point["y"])
     for kind in ("mouseMoved", "mousePressed", "mouseReleased"):
         params: dict[str, Any] = {"type": kind, "x": x, "y": y}
@@ -724,6 +802,18 @@ def _after(pid: str, conv_id: str, done: str, max_chars: int) -> dict[str, Any]:
     return {"done": done, **_look(pid2, max_chars)}
 
 
+@contextlib.contextmanager
+def _focused(pid: str):
+    """The page acts focused meanwhile. A tab behind Ducky's own page has no focus: a click
+    focused nothing and typed text went nowhere (Oct 31 2026)."""
+    on = not _input(pid, "Emulation.setFocusEmulationEnabled", {"enabled": True})
+    try:
+        yield
+    finally:
+        if on:
+            _input(pid, "Emulation.setFocusEmulationEnabled", {"enabled": False})
+
+
 def look_page(pane_id: str = "", conv_id: str = "", max_chars: int = 8000) -> dict[str, Any]:
     pid, why = _agent_page(pane_id, conv_id)
     return {"ok": False, "error": why} if why else _look(pid, max_chars)
@@ -731,8 +821,57 @@ def look_page(pane_id: str = "", conv_id: str = "", max_chars: int = 8000) -> di
 
 def click_page(ref: str, pane_id: str = "", conv_id: str = "", max_chars: int = 8000) -> dict[str, Any]:
     pid, why = _agent_page(pane_id, conv_id)
-    why = why or _click_ref(pid, ref)
+    if not why:
+        with _focused(pid):
+            why = _click_ref(pid, ref)
     return {"ok": False, "error": why} if why else _after(pid, conv_id, f"clicked {ref}", max_chars)
+
+
+def _js(pid: str, script: str) -> dict[str, Any]:
+    """What a page script returned ({} when it threw or sent nothing)."""
+    from frontend.ui_web import browser_overlay
+
+    got = browser_overlay.evaluate(pid, script, timeout_s=10.0)
+    return got["value"] if got.get("ok") and isinstance(got.get("value"), dict) else {}
+
+
+def _fill_control(pid: str, ref: str, text: str, kind: dict[str, Any]) -> tuple[str, str]:
+    """Fill a dropdown, a date/time/colour/range box or a checkbox, which typing can't: (what was
+    done, '') or ('', why not). ('', '') when *ref* is a box to type into."""
+    tag, kind_type = kind.get("tag"), kind.get("type")
+    gone = f"{ref} isn't on the page any more. browser_look again."
+    if tag in ("button", "a") or kind_type in ("submit", "button", "reset", "image"):
+        return "", f"{ref} is a button or link, not a box: browser_click it."
+    if kind_type == "file":
+        return "", f"{ref} picks a file from the PC: the person does that themselves."
+    if tag == "select":
+        got = _js(pid, _CHOOSE_JS % (json.dumps(ref), json.dumps(str(text))))
+        if not got.get("ok"):
+            return "", gone
+        if not got.get("found"):
+            return "", f"{ref} has no option {text!r}. Its options: {', '.join(got.get('options') or [])}."
+        return f"chose {got.get('label')!r} in {ref}", ""
+    if kind_type in _VALUE_BOXES:
+        got = _js(pid, _SET_VALUE_JS % (json.dumps(ref), json.dumps(str(text).strip())))
+        if not got.get("ok"):
+            return "", gone
+        if not got.get("took"):
+            return "", f"{ref} didn't take {text!r}: it wants {_VALUE_BOXES[kind_type]}."
+        return f"set {ref} to {got.get('value')}", ""
+    if kind_type in ("checkbox", "radio"):
+        word = str(text).strip().lower()
+        if word not in _YES and word not in _NO:
+            return "", f"{ref} is a {kind_type}: type true to tick it or false to clear it."
+        want = word in _YES
+        if want == bool(kind.get("checked")):
+            return f"{ref} was already {'ticked' if want else 'clear'}", ""
+        why = _click_ref(pid, ref)
+        if why:
+            return "", why
+        if bool(_js(pid, _KIND_JS % ref).get("checked")) != want:
+            return "", f"Clicking {ref} didn't {'tick' if want else 'clear'} it. browser_look to see what is in the way."
+        return f"{'ticked' if want else 'cleared'} {ref}", ""
+    return "", ""
 
 
 def _field(pid: str, ref: str) -> str | None:
@@ -753,35 +892,44 @@ def type_page(ref: str, text: str, submit: bool = False, clear: bool = False, pa
     pid, why = _agent_page(pane_id, conv_id)
     if why:
         return {"ok": False, "error": why}
-    why = _click_ref(pid, ref, typing=True)
-    if why:
-        return {"ok": False, "error": why}
-    # A tab behind Ducky's own page has no focus: the click focused nothing and the text
-    # went nowhere, while this still said "typed" (Oct 31 2026). The page acts focused
-    # while it is typed into, the box is focused, and checked afterwards.
-    focus = not _input(pid, "Emulation.setFocusEmulationEnabled", {"enabled": True})
-    try:
-        if _field(pid, ref) is None:
-            why = f"{ref} isn't on the page any more. browser_look again."
-        if not why and clear:
-            select_all = {"key": "a", "code": "KeyA", "windowsVirtualKeyCode": 65, "modifiers": 2}
-            why = _input(pid, "Input.dispatchKeyEvent", {"type": "rawKeyDown", "commands": ["selectAll"], **select_all}) \
-                or _input(pid, "Input.dispatchKeyEvent", {"type": "keyUp", **select_all})
-        why = why or _input(pid, "Input.insertText", {"text": str(text)})
-        if not why and _squash(text) and _squash(text) not in _squash(_field(pid, ref) or ""):
-            why = (f"The text didn't reach {ref}: the box doesn't show it. Ask the person to bring the "
-                   "Browser tab to the front, then browser_look and try again.")
+    if not _REF.match(ref or ""):
+        return {"ok": False, "error": f"{ref!r} isn't a ref. browser_look first and use one of its refs (e1, e2…)."}
+    kind = _js(pid, _KIND_JS % ref)
+    if not kind.get("ok"):
+        return {"ok": False, "error": f"{ref} isn't on the page any more. browser_look again."}
+    if kind.get("secret"):
+        return {"ok": False, "error": f"{ref} is a password or sign-in code box: the person types that themselves."}
+    if kind.get("disabled"):
+        return {"ok": False, "error": f"{ref} is switched off on the page (disabled)."}
+    done = f"typed into {ref}"
+    # Text, focused and checked afterwards: the text went nowhere while this said "typed"
+    # (Oct 31 2026). A dropdown or a date box took typed text into the box focused before it.
+    with _focused(pid):
+        filled, why = _fill_control(pid, ref, text, kind)
+        if filled:
+            done = filled
+        elif not why:
+            why = _click_ref(pid, ref, typing=True)
+            if not why and _field(pid, ref) is None:
+                why = f"{ref} isn't on the page any more. browser_look again."
+            if not why and clear:
+                select_all = {"key": "a", "code": "KeyA", "windowsVirtualKeyCode": 65, "modifiers": 2}
+                why = _input(pid, "Input.dispatchKeyEvent", {"type": "rawKeyDown", "commands": ["selectAll"], **select_all}) \
+                    or _input(pid, "Input.dispatchKeyEvent", {"type": "keyUp", **select_all})
+            why = why or _input(pid, "Input.insertText", {"text": str(text)})
+            if not why and _squash(text) and _squash(text) not in _squash(_field(pid, ref) or ""):
+                why = (f"The text didn't reach {ref}: the box doesn't show it. Ask the person to bring the "
+                       "Browser tab to the front, then browser_look and try again.")
         if not why and submit:
             why = _press(pid, "Enter")
-    finally:
-        if focus:
-            _input(pid, "Emulation.setFocusEmulationEnabled", {"enabled": False})
-    return {"ok": False, "error": why} if why else _after(pid, conv_id, f"typed into {ref}", max_chars)
+    return {"ok": False, "error": why} if why else _after(pid, conv_id, done, max_chars)
 
 
 def press_page(key: str, pane_id: str = "", conv_id: str = "", max_chars: int = 8000) -> dict[str, Any]:
     pid, why = _agent_page(pane_id, conv_id)
-    why = why or _press(pid, key)
+    if not why:
+        with _focused(pid):
+            why = _press(pid, key)
     return {"ok": False, "error": why} if why else _after(pid, conv_id, f"pressed {key}", max_chars)
 
 
@@ -1021,8 +1169,9 @@ def register(api) -> None:
 
     @api.tool(name="browser_type", intent=INTENT)
     def browser_type(ref: str, text: str, submit: bool = False, clear: bool = False, pane_id: str = "") -> str:
-        """Click element *ref* from the last browser_look and type *text* there. clear=true replaces
-        what is in it; submit=true presses Enter after. Returns the page after."""
+        """Click element *ref* from the last browser_look and type *text* there. A dropdown takes the
+        option to pick (its label or value), a date box YYYY-MM-DD (time HH:MM), a checkbox true or
+        false. clear=true replaces what is in it; submit=true presses Enter after. Returns the page after."""
         return _dumps(_site_work("type_page", ref=ref, text=text, submit=submit, clear=clear, pane_id=pane_id))
 
     @api.tool(name="browser_press", intent=INTENT)
