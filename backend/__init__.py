@@ -887,42 +887,169 @@ def _squash(text: str) -> str:
     return "".join(str(text).split())
 
 
+def _box_kind(pid: str, ref: str) -> tuple[dict[str, Any], str]:
+    """What box *ref* is, if agents may type in it: (kind, '') or ({}, why not)."""
+    if not _REF.match(ref or ""):
+        return {}, f"{ref!r} isn't a ref. browser_look first and use one of its refs (e1, e2…)."
+    kind = _js(pid, _KIND_JS % ref)
+    if not kind.get("ok"):
+        return {}, f"{ref} isn't on the page any more. browser_look again."
+    if kind.get("secret"):
+        return {}, f"{ref} is a password or sign-in code box: the person types that themselves."
+    if kind.get("disabled"):
+        return {}, f"{ref} is switched off on the page (disabled)."
+    return kind, ""
+
+
+def _type_ref(pid: str, ref: str, text: str, submit: bool, clear: bool,
+              kind: dict[str, Any] | None = None) -> tuple[str, str]:
+    """Type *text* into looked-at box *ref* (the page already acting focused): (what was done, '')
+    or ('', why not)."""
+    if kind is None:
+        kind, why = _box_kind(pid, ref)
+        if why:
+            return "", why
+    done = f"typed into {ref}"
+    # Text, focused and checked afterwards: the text went nowhere while this said "typed"
+    # (Oct 31 2026). A dropdown or a date box took typed text into the box focused before it.
+    filled, why = _fill_control(pid, ref, text, kind)
+    if filled:
+        done = filled
+    elif not why:
+        why = _click_ref(pid, ref, typing=True)
+        if not why and _field(pid, ref) is None:
+            why = f"{ref} isn't on the page any more. browser_look again."
+        if not why and clear:
+            select_all = {"key": "a", "code": "KeyA", "windowsVirtualKeyCode": 65, "modifiers": 2}
+            why = _input(pid, "Input.dispatchKeyEvent", {"type": "rawKeyDown", "commands": ["selectAll"], **select_all}) \
+                or _input(pid, "Input.dispatchKeyEvent", {"type": "keyUp", **select_all})
+        why = why or _input(pid, "Input.insertText", {"text": str(text)})
+        if not why and _squash(text) and _squash(text) not in _squash(_field(pid, ref) or ""):
+            why = (f"The text didn't reach {ref}: the box doesn't show it. Ask the person to bring the "
+                   "Browser tab to the front, then browser_look and try again.")
+    if not why and submit:
+        why = _press(pid, "Enter")
+    return ("", why) if why else (done, "")
+
+
 def type_page(ref: str, text: str, submit: bool = False, clear: bool = False, pane_id: str = "",
               conv_id: str = "", max_chars: int = 8000) -> dict[str, Any]:
     pid, why = _agent_page(pane_id, conv_id)
     if why:
         return {"ok": False, "error": why}
-    if not _REF.match(ref or ""):
-        return {"ok": False, "error": f"{ref!r} isn't a ref. browser_look first and use one of its refs (e1, e2…)."}
-    kind = _js(pid, _KIND_JS % ref)
-    if not kind.get("ok"):
-        return {"ok": False, "error": f"{ref} isn't on the page any more. browser_look again."}
-    if kind.get("secret"):
-        return {"ok": False, "error": f"{ref} is a password or sign-in code box: the person types that themselves."}
-    if kind.get("disabled"):
-        return {"ok": False, "error": f"{ref} is switched off on the page (disabled)."}
-    done = f"typed into {ref}"
-    # Text, focused and checked afterwards: the text went nowhere while this said "typed"
-    # (Oct 31 2026). A dropdown or a date box took typed text into the box focused before it.
+    kind, why = _box_kind(pid, ref)  # refused before the page is touched
+    if why:
+        return {"ok": False, "error": why}
     with _focused(pid):
-        filled, why = _fill_control(pid, ref, text, kind)
-        if filled:
-            done = filled
-        elif not why:
-            why = _click_ref(pid, ref, typing=True)
-            if not why and _field(pid, ref) is None:
-                why = f"{ref} isn't on the page any more. browser_look again."
-            if not why and clear:
-                select_all = {"key": "a", "code": "KeyA", "windowsVirtualKeyCode": 65, "modifiers": 2}
-                why = _input(pid, "Input.dispatchKeyEvent", {"type": "rawKeyDown", "commands": ["selectAll"], **select_all}) \
-                    or _input(pid, "Input.dispatchKeyEvent", {"type": "keyUp", **select_all})
-            why = why or _input(pid, "Input.insertText", {"text": str(text)})
-            if not why and _squash(text) and _squash(text) not in _squash(_field(pid, ref) or ""):
-                why = (f"The text didn't reach {ref}: the box doesn't show it. Ask the person to bring the "
-                       "Browser tab to the front, then browser_look and try again.")
-        if not why and submit:
-            why = _press(pid, "Enter")
+        done, why = _type_ref(pid, ref, text, submit, clear, kind)
     return {"ok": False, "error": why} if why else _after(pid, conv_id, done, max_chars)
+
+
+# Finds one element anywhere on the page (not only on screen) by what it is called: its
+# aria-label, the text of its aria-labelledby or <label>, placeholder, own text, title or name.
+# Exact name first, then starting with, then containing; *nth* picks among equals (form sections
+# that repeat, e.g. a second "Job Title"). Marks it data-ducky-ref="e0" for the click/type code.
+# Nov 10 2026: refs only covered the screen and changed after every look, so a Workday form
+# took one call per field and pop-up lists scrolled away between the look and the click.
+_FIND_JS = r"""((want, nth, role) => {
+  const sel = 'a[href], button, input:not([type=hidden]), textarea, select, summary, [contenteditable=""], ' +
+    '[contenteditable="true"], [role=button], [role=link], [role=tab], [role=menuitem], [role=option], ' +
+    '[role=checkbox], [role=radio], [role=switch], [role=textbox], [role=combobox], [role=spinbutton], ' +
+    '[tabindex]:not([tabindex="-1"])';
+  const norm = (s) => String(s || '').trim().replace(/\s+/g, ' ').replace(/\*$/, '').trim().toLowerCase();
+  const names = (el) => {
+    const out = [el.getAttribute('aria-label')];
+    const by = el.getAttribute('aria-labelledby');
+    if (by) out.push(by.split(/\s+/).map((id) => (document.getElementById(id) || {}).innerText || '').join(' '));
+    for (const l of el.labels || []) out.push(l.innerText);
+    out.push(el.getAttribute('placeholder'), el.innerText, el.getAttribute('title'), el.getAttribute('name'));
+    return out.map(norm).filter(Boolean);
+  };
+  const w = norm(want), tiers = [[], [], []], seen = [];
+  for (const el of document.querySelectorAll(sel)) {
+    const r = el.getBoundingClientRect(), st = getComputedStyle(el);
+    if (r.width < 2 || r.height < 2 || st.visibility === 'hidden' || st.display === 'none') continue;
+    if (role && (el.getAttribute('role') || el.tagName.toLowerCase()) !== role) continue;
+    const n = names(el);
+    if (seen.length < 40 && n[0]) seen.push(n[0].slice(0, 60));
+    const tier = n.some((s) => s === w) ? 0 : n.some((s) => s.startsWith(w)) ? 1 : n.some((s) => s.includes(w)) ? 2 : -1;
+    if (tier >= 0) tiers[tier].push(el);
+  }
+  const hits = tiers.find((t) => t.length) || [];
+  const el = hits[Math.max(0, nth - 1)];
+  if (!el) return {ok: true, found: false, count: hits.length, names: [...new Set(seen)].slice(0, 25)};
+  document.querySelectorAll('[data-ducky-ref="e0"]').forEach((e) => e.removeAttribute('data-ducky-ref'));
+  el.setAttribute('data-ducky-ref', 'e0');
+  return {ok: true, found: true, count: hits.length};
+})(%s, %d, %s)"""
+
+_BATCH_MAX = 80
+
+
+def _find(pid: str, target: str, nth: int = 1, role: str = "") -> tuple[str, str]:
+    """The ref of the element called *target* (a ref from browser_look stays as it is): (ref, '')
+    or ('', why not)."""
+    want = str(target or "").strip()
+    if _REF.match(want):
+        return want, ""
+    if not want:
+        return "", "A step names no element."
+    got = _js(pid, _FIND_JS % (json.dumps(want), max(1, int(nth or 1)), json.dumps(str(role or ""))))
+    if not got.get("ok"):
+        return "", "The page didn't answer."
+    if not got.get("found"):
+        if got.get("count"):
+            return "", f"Only {got['count']} element(s) are called {want!r}; nth={nth} is past them."
+        return "", f"Nothing on the page is called {want!r}. Some names there: {', '.join(got.get('names') or [])}."
+    return "e0", ""
+
+
+def _batch_step(pid: str, step: Any) -> tuple[str, str]:
+    """Run one browser_batch step: (what was done, '') or ('', why not)."""
+    if not isinstance(step, dict):
+        return "", f"{step!r} isn't a step: use {{'type': name, 'text': ...}}, {{'click': name}}, {{'press': key}} or {{'wait': s}}."
+    if "press" in step:
+        why = _press(pid, str(step["press"]))
+        return ("", why) if why else (f"pressed {step['press']}", "")
+    if "wait" in step:
+        time.sleep(max(0.0, min(float(step["wait"] or 0), 5.0)))
+        return f"waited {step['wait']} s", ""
+    typing = "type" in step
+    if not typing and "click" not in step:
+        return "", f"{step!r} has no type, click, press or wait."
+    target = str(step["type"] if typing else step["click"])
+    ref, why = _find(pid, target, int(step.get("nth") or 1), str(step.get("role") or ""))
+    if why:
+        return "", why
+    if typing:
+        done, why = _type_ref(pid, ref, str(step.get("text", "")), bool(step.get("submit")), bool(step.get("clear")))
+        return ("", why) if why else (f"{done.replace(ref, repr(target))}", "")
+    why = _click_ref(pid, ref)
+    return ("", why) if why else (f"clicked {target!r}", "")
+
+
+def batch_page(steps: list[Any], pane_id: str = "", conv_id: str = "", max_chars: int = 8000) -> dict[str, Any]:
+    """Run many type / click / press steps on one page in one go; stops at the first that fails."""
+    pid, why = _agent_page(pane_id, conv_id)
+    if why:
+        return {"ok": False, "error": why}
+    if not isinstance(steps, list) or not steps:
+        return {"ok": False, "error": "steps is empty: give a list of steps."}
+    if len(steps) > _BATCH_MAX:
+        return {"ok": False, "error": f"{len(steps)} steps; send at most {_BATCH_MAX} per call."}
+    done: list[str] = []
+    with _focused(pid):
+        for i, step in enumerate(steps, 1):
+            did, why = _batch_step(pid, step)
+            if why:
+                break
+            done.append(did)
+            pause = step.get("pause", 0.3) if isinstance(step, dict) else 0.3
+            time.sleep(max(0.0, min(float(pause or 0), 5.0)))  # let pop-up lists open and close
+    if why:
+        return {**_look(pid, max_chars), "ok": False, "steps_done": done, "failed_step": i, "error": why}
+    out = _after(pid, conv_id, f"ran {len(done)} steps", max_chars)
+    return {**out, "steps_done": done}
 
 
 def press_page(key: str, pane_id: str = "", conv_id: str = "", max_chars: int = 8000) -> dict[str, Any]:
@@ -1080,6 +1207,7 @@ _PANE_WORK: dict[str, Any] = {
     "click_page": _site_checked(click_page),
     "type_page": _site_checked(type_page),
     "press_page": _site_checked(press_page),
+    "batch_page": _site_checked(batch_page),
 }
 
 
@@ -1173,6 +1301,20 @@ def register(api) -> None:
         option to pick (its label or value), a date box YYYY-MM-DD (time HH:MM), a checkbox true or
         false. clear=true replaces what is in it; submit=true presses Enter after. Returns the page after."""
         return _dumps(_site_work("type_page", ref=ref, text=text, submit=submit, clear=clear, pane_id=pane_id))
+
+    @api.tool(name="browser_batch", intent=INTENT)
+    def browser_batch(steps: list[dict], pane_id: str = "") -> str:
+        """Fill a whole form in one call: run *steps* in order on the page in the Browser tab, finding
+        each element by what it is called (its label, aria-label, placeholder or text) anywhere on
+        the page, not only on screen; a ref from browser_look works too. Steps:
+        {"type": "First Name", "text": "Ada", "clear": true, "submit": false}, {"click": "Save"},
+        {"press": "Tab"}, {"wait": 1}. Any step takes "nth": 2 (the second element with that name,
+        for repeated form sections), "role": "option" (only list options; also button, checkbox…)
+        and "pause" (seconds after it, default 0.3). A custom drop-down list: {"click": "Language"},
+        then {"click": "Bulgarian", "role": "option"}. Stops at the first step that fails and says
+        which, with the page as it is then. Ask the person before a step that posts, sends, buys or
+        deletes."""
+        return _dumps(_site_work("batch_page", steps=steps, pane_id=pane_id))
 
     @api.tool(name="browser_press", intent=INTENT)
     def browser_press(key: str, pane_id: str = "") -> str:
